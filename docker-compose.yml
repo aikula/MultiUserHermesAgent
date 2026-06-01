@@ -3,6 +3,7 @@ services:
     image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
     container_name: hermes-gateway
     restart: unless-stopped
+    user: "${HERMES_UID:-0}:${HERMES_GID:-0}"
     env_file:
       - .env.hermes
     environment:
@@ -21,16 +22,30 @@ services:
       - "traefik.enable=true"
     command: ["gateway", "run"]
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8642/health/detailed || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8642/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   dashboard:
     image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
     container_name: hermes-dashboard
     restart: unless-stopped
+    user: "${HERMES_UID:-0}:${HERMES_GID:-0}"
     depends_on:
       - gateway
     environment:
@@ -56,6 +71,25 @@ services:
     # (owned by the gateway container — lock conflict on shared volume).
     command: ["sh", "-c", "touch /run/service/gateway-default/down /run/service/gateway-default/log/down 2>/dev/null; echo d > /run/service/gateway-default/supervise/control 2>/dev/null; echo d > /run/service/gateway-default/log/supervise/control 2>/dev/null; exec hermes dashboard --host 0.0.0.0 --no-open --insecure"]
     stop_grace_period: 5s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:9119/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   tghub-network:
