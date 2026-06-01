@@ -1,0 +1,62 @@
+services:
+  gateway:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    container_name: hermes-gateway
+    restart: unless-stopped
+    env_file:
+      - .env.hermes
+    environment:
+      - API_SERVER_HOST=${API_SERVER_HOST:-0.0.0.0}
+      - API_SERVER_KEY=${API_SERVER_KEY}
+      - API_SERVER_ENABLED=${API_SERVER_ENABLED:-true}
+      - API_SERVER_CORS_ORIGINS=${API_SERVER_CORS_ORIGINS}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,0.0.0.0}
+    volumes:
+      - /root/.hermes:/opt/data
+    networks:
+      - tghub-network
+    labels:
+      - "traefik.enable=true"
+    command: ["gateway", "run"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8642/health/detailed || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  dashboard:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    environment:
+      - HERMES_UID=${HERMES_UID:-0}
+      - HERMES_GID=${HERMES_GID:-0}
+      - GATEWAY_HEALTH_URL=${GATEWAY_HEALTH_URL:-http://hermes-gateway:8642/health/detailed}
+    volumes:
+      - /root/.hermes:/opt/data
+    networks:
+      - tghub-network
+    labels:
+      - "traefik.enable=true"
+
+      # Dashboard route — https://${HERMES_HOST}/
+      - "traefik.http.services.hermes-dash.loadbalancer.server.port=${HERMES_DASHBOARD_PORT:-9119}"
+      - "traefik.http.routers.hermes-dash.rule=Host(`${HERMES_HOST}`)"
+      - "traefik.http.routers.hermes-dash.entrypoints=${TRAEFIK_ENTRYPOINTS:-websecure}"
+      - "traefik.http.routers.hermes-dash.tls=true"
+      - "traefik.http.routers.hermes-dash.tls.certresolver=${TRAEFIK_CERTRESOLVER:-myresolver}"
+      - "traefik.http.routers.hermes-dash.middlewares=dash-auth"
+      - "traefik.http.middlewares.dash-auth.basicauth.users=${DASHBOARD_BASIC_AUTH_USER}:${DASHBOARD_BASIC_AUTH_HASH}"
+    # Prevent gateway-default s6-log from writing to /opt/data/logs/gateways/default/
+    # (owned by the gateway container — lock conflict on shared volume).
+    command: ["sh", "-c", "touch /run/service/gateway-default/down /run/service/gateway-default/log/down 2>/dev/null; echo d > /run/service/gateway-default/supervise/control 2>/dev/null; echo d > /run/service/gateway-default/log/supervise/control 2>/dev/null; exec hermes dashboard --host 0.0.0.0 --no-open --insecure"]
+    stop_grace_period: 5s
+
+networks:
+  tghub-network:
+    external: true

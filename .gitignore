@@ -1,0 +1,23 @@
+# Секреты — никогда не коммитить
+.env.hermes
+.env
+*.env
+!.env.example
+
+# Node-артефакты (от claude-code CLI, не относится к Hermes)
+node_modules/
+package-lock.json
+package.json
+
+# Логи
+*.log
+logs/
+
+# Временные
+*.bak
+*.tmp
+.DS_Store
+
+# Пустые каталоги-скелеты (раскомментировать, если не планируется использовать)
+# config/
+# data/
