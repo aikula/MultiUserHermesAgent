@@ -51,7 +51,7 @@ services:
       - "traefik.http.routers.hermes-dash.tls=true"
       - "traefik.http.routers.hermes-dash.tls.certresolver=${TRAEFIK_CERTRESOLVER:-myresolver}"
       - "traefik.http.routers.hermes-dash.middlewares=dash-auth"
-      - "traefik.http.middlewares.dash-auth.basicauth.users=${DASHBOARD_BASIC_AUTH_USER}:${DASHBOARD_BASIC_AUTH_HASH}"
+      - "traefik.http.middlewares.dash-auth.basicauth.users=${DASHBOARD_BASIC_AUTH_USER}:$$apr1$$zGvtK9NI$$husVhmRyWbKAm3atjtoaD/"
     # Prevent gateway-default s6-log from writing to /opt/data/logs/gateways/default/
     # (owned by the gateway container — lock conflict on shared volume).
     command: ["sh", "-c", "touch /run/service/gateway-default/down /run/service/gateway-default/log/down 2>/dev/null; echo d > /run/service/gateway-default/supervise/control 2>/dev/null; echo d > /run/service/gateway-default/log/supervise/control 2>/dev/null; exec hermes dashboard --host 0.0.0.0 --no-open --insecure"]
