@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Профиль — {{ user.login }}{% endblock %}
+{% block content %}
+<h1>Профиль</h1>
+<div class="card">
+  <dl class="kv">
+    <dt>UID</dt>           <dd><code>{{ user.uid }}</code></dd>
+    <dt>Логин</dt>         <dd><code>@{{ user.login }}</code></dd>
+    <dt>Имя</dt>           <dd>{{ user.name or "—" }}</dd>
+    <dt>Telegram</dt>      <dd>{% if user.telegram_id %}<code>{{ user.telegram_id }}</code>{% else %}<span class="muted">не привязан</span>{% endif %}</dd>
+    <dt>Квота</dt>         <dd>{{ "{:,}".format(user.quota_remaining or 0).replace(",", " ") }} токенов осталось</dd>
+  </dl>
+</div>
+
+<h2>SOUL.md <span class="muted">(персона ассистента)</span></h2>
+<pre class="soul">{{ soul }}</pre>
+<p class="muted">Файл <code>users/{{ user.uid }}/SOUL.md</code> — можно править на хосте.</p>
+
+<p class="muted">Telegram-привязка появится в Фазе 3 (после запуска relay).</p>
+{% endblock %}

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Регистрация — Hermes{% endblock %}
+{% block content %}
+<h1>Регистрация</h1>
+{% if error %}<div class="alert">{{ error }}</div>{% endif %}
+<form method="post" action="/register" class="card">
+  <label>Имя
+    <input type="text" name="name" required autofocus>
+  </label>
+  <label>Логин
+    <input type="text" name="login" value="{{ login or '' }}" required pattern="[a-z0-9_]+" minlength="3">
+  </label>
+  <label>Пароль (≥ 6 символов)
+    <input type="password" name="password" required minlength="6">
+  </label>
+  <label>Invite-code
+    <input type="text" name="invite_code" required>
+  </label>
+  <button type="submit">Зарегистрироваться</button>
+</form>
+<p class="muted">Есть аккаунт? <a href="/login">Войти</a></p>
+{% endblock %}

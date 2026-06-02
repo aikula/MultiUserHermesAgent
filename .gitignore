@@ -21,3 +21,8 @@ logs/
 # Пустые каталоги-скелеты (раскомментировать, если не планируется использовать)
 # config/
 # data/
+
+# Python-артефакты webapp
+webapp/**/__pycache__/
+webapp/**/*.pyc
+webapp/.venv/

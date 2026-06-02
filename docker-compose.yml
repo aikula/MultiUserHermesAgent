@@ -91,6 +91,59 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  webapp:
+    build:
+      context: ./webapp
+      dockerfile: Dockerfile
+    image: hermes-webapp:local
+    container_name: hermes-webapp
+    restart: unless-stopped
+    user: "${HERMES_UID:-0}:${HERMES_GID:-0}"
+    depends_on:
+      - gateway
+    env_file:
+      - .env.hermes
+    environment:
+      - USERS_DB_PATH=/opt/app/data/users.db
+      - HERMES_USERS_DIR=/opt/hermes-users
+      - HERMES_SHARED_DIR=/opt/hermes-shared
+      - SOUL_TEMPLATE_PATH=/opt/app/data/templates/SOUL.md
+      - WELCOME_QUOTA=${WELCOME_QUOTA:-2000000}
+      - JWT_SECRET=${WEBAPP_JWT_SECRET}
+      - INVITE_CODE_BOOTSTRAP=${INVITE_CODE_BOOTSTRAP:-}
+    volumes:
+      - /root/.hermes-app:/opt/app/data
+      - /root/.hermes/users:/opt/hermes-users:rw
+      - /root/.hermes-shared:/opt/hermes-shared:rw
+    networks:
+      - tghub-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.hermes-webapp.loadbalancer.server.port=9000"
+      - "traefik.http.routers.hermes-webapp.rule=Host(`${WEBAPP_HOST}`)"
+      - "traefik.http.routers.hermes-webapp.entrypoints=${TRAEFIK_ENTRYPOINTS:-websecure}"
+      - "traefik.http.routers.hermes-webapp.tls=true"
+      - "traefik.http.routers.hermes-webapp.tls.certresolver=${TRAEFIK_CERTRESOLVER:-myresolver}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   tghub-network:
     external: true
