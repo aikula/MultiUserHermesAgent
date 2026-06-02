@@ -4,18 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Hermes{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="{{ chat_prefix }}/static/app.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/">Hermes</a>
+    <a class="brand" href="{{ chat_prefix }}/">Hermes</a>
     <nav>
       {% if request.cookies.session %}
-        <a href="/profile">Профиль</a>
-        <a href="/logout">Выйти</a>
+        <a href="{{ chat_prefix }}/profile">Профиль</a>
+        <a href="{{ chat_prefix }}/logout">Выйти</a>
       {% else %}
-        <a href="/login">Вход</a>
-        <a href="/register">Регистрация</a>
+        <a href="{{ chat_prefix }}/login">Вход</a>
+        <a href="{{ chat_prefix }}/register">Регистрация</a>
       {% endif %}
     </nav>
   </header>

@@ -83,6 +83,7 @@ def current_user(request: Request) -> str | None:
 app = FastAPI(title="hermes-webapp", version="0.1.0", root_path="/chat")
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+templates.env.globals["chat_prefix"] = "/chat"
 
 
 @app.middleware("http")

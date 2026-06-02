@@ -54,8 +54,9 @@
 <p class="muted">Файл <code>users/{{ user.uid }}/SOUL.md</code> — можно править на хосте.</p>
 
 <script>
+const PREFIX = window.location.pathname.startsWith("/chat/") ? "/chat" : "";
 document.getElementById("tg-new")?.addEventListener("click", async () => {
-  const r = await fetch("/api/profile/generate-link", { method: "POST" });
+  const r = await fetch(PREFIX + "/api/profile/generate-link", { method: "POST" });
   if (!r.ok) { alert("Ошибка: " + r.status); return; }
   const data = await r.json();
   location.reload();
