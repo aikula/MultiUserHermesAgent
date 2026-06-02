@@ -70,3 +70,26 @@ pre.soul {
   padding: 16px; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; line-height: 1.5;
 }
 code { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px; }
+
+/* ---- Chat ---- */
+.chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 120px); min-height: 400px; }
+.chat-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--border); }
+.chat-log { flex: 1; overflow-y: auto; padding: 12px 0; display: flex; flex-direction: column; gap: 10px; }
+.chat-loading, .chat-empty { text-align: center; padding: 24px; }
+.msg { max-width: 80%; padding: 8px 12px; border-radius: 10px; line-height: 1.4; word-wrap: break-word; }
+.msg-role { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.msg-body { white-space: pre-wrap; }
+.msg-user { align-self: flex-end; background: var(--accent); color: #fff; }
+.msg-user .msg-role { color: rgba(255,255,255,0.7); }
+.msg-assistant { align-self: flex-start; background: var(--card); border: 1px solid var(--border); }
+.msg-pending { opacity: 0.6; }
+.msg-pending .msg-body { display: flex; gap: 4px; padding: 6px 0; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce 1.2s infinite; }
+.dot:nth-child(2) { animation-delay: 0.15s; }
+.dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
+.chat-form { display: flex; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.chat-form textarea { flex: 1; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; resize: vertical; min-height: 44px; max-height: 200px; }
+.chat-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.chat-form button { padding: 0 18px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font-size: 20px; cursor: pointer; }
+.chat-form button:disabled { opacity: 0.5; cursor: wait; }

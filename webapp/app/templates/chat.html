@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Чат — {{ user.login }}{% endblock %}
+{% block content %}
+<div class="chat-wrap">
+  <div class="chat-header">
+    <strong>@{{ user.login }}</strong>
+    <span class="muted" id="chat-usage"></span>
+  </div>
+  <div class="chat-log" id="chat-log">
+    <div class="muted chat-loading">Загружаю историю…</div>
+  </div>
+  <form class="chat-form" id="chat-form" autocomplete="off">
+    <textarea id="chat-input" name="content" rows="2" placeholder="Сообщение (Shift+Enter — новая строка, Enter — отправить)" required></textarea>
+    <button type="submit" id="chat-send">→</button>
+  </form>
+</div>
+<script src="/static/chat.js"></script>
+{% endblock %}

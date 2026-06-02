@@ -1,23 +1,21 @@
-"""Hermes multi-user webapp (Phase 1a)."""
+"""Hermes multi-user webapp."""
 import os
 import secrets
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import bcrypt
+import httpx
 import jwt
-from fastapi import Depends, FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-APP_DIR = Path(__file__).parent
-USERS_DB = Path(os.environ.get("USERS_DB_PATH", "/opt/app/data/users.db"))
-HERMES_USERS_DIR = Path(os.environ.get("HERMES_USERS_DIR", "/opt/hermes-users"))
-HERMES_SHARED_DIR = Path(os.environ.get("HERMES_SHARED_DIR", "/opt/hermes-shared"))
-SOUL_TEMPLATE_PATH = Path(os.environ.get("SOUL_TEMPLATE_PATH", "/opt/app/data/templates/SOUL.md"))
+from . import chat
+from .db import HERMES_SHARED_DIR, HERMES_USERS_DIR, SOUL_TEMPLATE_PATH_DEFAULT, USERS_DB, get_db, init_db, now_iso
 
+SOUL_TEMPLATE_PATH = Path(os.environ.get("SOUL_TEMPLATE_PATH", str(SOUL_TEMPLATE_PATH_DEFAULT)))
 WELCOME_QUOTA = int(os.environ.get("WELCOME_QUOTA", "2000000"))
 JWT_SECRET = os.environ.get("JWT_SECRET")
 JWT_ALGO = "HS256"
@@ -26,63 +24,7 @@ JWT_TTL_HOURS = 24 * 30
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET env var is required")
 
-
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(USERS_DB, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
-
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    uid TEXT PRIMARY KEY,
-    login TEXT UNIQUE NOT NULL,
-    name TEXT,
-    password_hash TEXT,
-    telegram_id INTEGER UNIQUE,
-    status TEXT DEFAULT 'active',
-    quota_remaining INTEGER,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS invite_codes (
-    code TEXT PRIMARY KEY,
-    used_by TEXT REFERENCES users(uid),
-    created_at TEXT NOT NULL,
-    expires_at TEXT
-);
-CREATE TABLE IF NOT EXISTS telegram_links (
-    code TEXT PRIMARY KEY,
-    uid TEXT REFERENCES users(uid) NOT NULL,
-    expires_at TEXT NOT NULL,
-    used_at TEXT
-);
-CREATE TABLE IF NOT EXISTS chat_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    uid TEXT REFERENCES users(uid) NOT NULL,
-    channel TEXT NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    tokens INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS quotas (
-    uid TEXT PRIMARY KEY REFERENCES users(uid),
-    month TEXT,
-    tokens_used INTEGER DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_chat_uid_created ON chat_history(uid, created_at);
-"""
-
-
-def init_db() -> None:
-    db = get_db()
-    db.executescript(SCHEMA)
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+APP_DIR = Path(__file__).parent
 
 
 def hash_password(pw: str) -> str:
@@ -114,9 +56,19 @@ def current_user(request: Request) -> str | None:
     return read_token(token) if token else None
 
 
-app = FastAPI(title="hermes-webapp", version="0.1.0")
+app = FastAPI(title="hermes-webapp", version="0.1.0", root_path="/chat")
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+
+
+@app.middleware("http")
+async def prefix_redirects(request: Request, call_next):
+    response = await call_next(request)
+    if 300 <= response.status_code < 400:
+        loc = response.headers.get("location")
+        if loc and loc.startswith("/") and not loc.startswith("//") and not loc.startswith("/chat"):
+            response.headers["location"] = "/chat" + loc
+    return response
 
 
 @app.on_event("startup")
@@ -147,8 +99,12 @@ def _render(request: Request, name: str, **ctx) -> HTMLResponse:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request, user: str | None = Depends(current_user)):
-    return RedirectResponse("/profile" if user else "/login", status_code=302)
+async def index(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    db = get_db()
+    u = db.execute("SELECT login, name FROM users WHERE uid=?", (user,)).fetchone()
+    return _render(request, "chat.html", user={"uid": user, **(dict(u) if u else {"login": "?", "name": "?"})})
 
 
 @app.get("/register", response_class=HTMLResponse)
@@ -235,3 +191,44 @@ def profile(request: Request, user: str | None = Depends(current_user)):
     soul_path = HERMES_USERS_DIR / user / "SOUL.md"
     soul = soul_path.read_text() if soul_path.exists() else ""
     return _render(request, "profile.html", user={"uid": user, **dict(u)}, soul=soul)
+
+
+@app.get("/api/history")
+def api_history(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    return JSONResponse(chat.get_history(user))
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(400, "empty content")
+    if len(content) > 8000:
+        raise HTTPException(400, "message too long (max 8000 chars)")
+
+    chat.save_message(user, "web", "user", content, 0)
+    history = chat.get_history(user)
+    messages = [{"role": "system", "content": chat.build_system_prompt(user)}]
+    for h in history:
+        messages.append({"role": h["role"], "content": h["content"]})
+
+    try:
+        result = await chat.call_hermes(messages)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Hermes API error: {e}") from e
+
+    chat.save_message(user, "web", "assistant", result["content"], result["total_tokens"])
+    return JSONResponse({
+        "content": result["content"],
+        "usage": {
+            "prompt_tokens": result["prompt_tokens"],
+            "completion_tokens": result["completion_tokens"],
+            "total_tokens": result["total_tokens"],
+        },
+        "finish_reason": result["finish_reason"],
+    })
