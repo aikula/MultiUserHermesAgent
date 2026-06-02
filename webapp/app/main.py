@@ -1,13 +1,15 @@
 """Hermes multi-user webapp."""
+import json
 import os
 import secrets
+import string
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import bcrypt
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Header, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -15,11 +17,24 @@ from fastapi.templating import Jinja2Templates
 from . import chat
 from .db import HERMES_SHARED_DIR, HERMES_USERS_DIR, SOUL_TEMPLATE_PATH_DEFAULT, USERS_DB, get_db, init_db, now_iso
 
+
+def _write_auth(telegram_id: int, uid: str) -> None:
+    """Пишет {telegram_id: uid} в /opt/hermes-shared/auth.json."""
+    path = HERMES_SHARED_DIR / "auth.json"
+    try:
+        data = json.loads(path.read_text() or "{}") if path.exists() else {}
+    except json.JSONDecodeError:
+        data = {}
+    data[str(telegram_id)] = uid
+    path.write_text(json.dumps(data, indent=2, sort_keys=True))
+
 SOUL_TEMPLATE_PATH = Path(os.environ.get("SOUL_TEMPLATE_PATH", str(SOUL_TEMPLATE_PATH_DEFAULT)))
 WELCOME_QUOTA = int(os.environ.get("WELCOME_QUOTA", "2000000"))
 JWT_SECRET = os.environ.get("JWT_SECRET")
 JWT_ALGO = "HS256"
 JWT_TTL_HOURS = 24 * 30
+INTERNAL_SECRET = os.environ.get("WEBAPP_INTERNAL_SECRET", "")
+TELEGRAM_LINK_TTL = int(os.environ.get("TELEGRAM_LINK_TTL", "600"))
 
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET env var is required")
@@ -72,7 +87,7 @@ async def prefix_redirects(request: Request, call_next):
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     USERS_DB.parent.mkdir(parents=True, exist_ok=True)
     HERMES_USERS_DIR.mkdir(parents=True, exist_ok=True)
     HERMES_SHARED_DIR.mkdir(parents=True, exist_ok=True)
@@ -86,6 +101,10 @@ def startup() -> None:
         if not db.execute("SELECT 1 FROM invite_codes WHERE code=?", (bootstrap,)).fetchone():
             db.execute("INSERT INTO invite_codes (code, created_at) VALUES (?, ?)", (bootstrap, now_iso()))
             print(f"[bootstrap] invite code created: {bootstrap}", flush=True)
+
+    # Start Telegram relay (if configured)
+    from .relay import start_relay_task
+    await start_relay_task()
 
 
 @app.get("/health")
@@ -190,7 +209,99 @@ def profile(request: Request, user: str | None = Depends(current_user)):
         return RedirectResponse("/logout", status_code=302)
     soul_path = HERMES_USERS_DIR / user / "SOUL.md"
     soul = soul_path.read_text() if soul_path.exists() else ""
-    return _render(request, "profile.html", user={"uid": user, **dict(u)}, soul=soul)
+    # active link code (not used, not expired)
+    link_row = db.execute(
+        "SELECT code, expires_at FROM telegram_links "
+        "WHERE uid=? AND used_at IS NULL AND expires_at > ? "
+        "ORDER BY expires_at DESC LIMIT 1",
+        (user, now_iso()),
+    ).fetchone()
+    link_code = link_row["code"] if link_row else None
+    link_expires = link_row["expires_at"] if link_row else None
+    return _render(request, "profile.html", user={"uid": user, **dict(u)}, soul=soul,
+                   link_code=link_code, link_expires=link_expires,
+                   bot_username=os.environ.get("TELEGRAM_BOT_USERNAME", ""))
+
+
+@app.post("/api/profile/generate-link")
+def api_generate_link(user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    db = get_db()
+    # expire old codes
+    db.execute("DELETE FROM telegram_links WHERE uid=? AND (used_at IS NOT NULL OR expires_at < ?)", (user, now_iso()))
+    code = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=TELEGRAM_LINK_TTL)).isoformat()
+    db.execute("INSERT INTO telegram_links (code, uid, expires_at) VALUES (?, ?, ?)", (code, user, expires))
+    return JSONResponse({"code": code, "expires_at": expires, "ttl": TELEGRAM_LINK_TTL})
+
+
+def _check_internal(x_internal_secret: str | None = Header(default=None)):
+    if not INTERNAL_SECRET:
+        raise HTTPException(503, "internal secret not configured")
+    if x_internal_secret != INTERNAL_SECRET:
+        raise HTTPException(403, "bad internal secret")
+    return True
+
+
+@app.post("/api/internal/consume-link-code")
+async def api_consume_link_code(request: Request, _: bool = Depends(_check_internal)):
+    """Relay вызывает: юзер шлёт /start <code> для привязки."""
+    body = await request.json()
+    code = (body.get("code") or "").strip()
+    telegram_id = body.get("telegram_id")
+    if not code or not isinstance(telegram_id, int):
+        raise HTTPException(400, "code and telegram_id required")
+    db = get_db()
+    row = db.execute("SELECT uid, expires_at, used_at FROM telegram_links WHERE code=?", (code,)).fetchone()
+    if not row or row["used_at"]:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+        return JSONResponse({"ok": False, "error": "expired"}, status_code=410)
+    uid = row["uid"]
+    db.execute("UPDATE telegram_links SET used_at=? WHERE code=?", (now_iso(), code))
+    db.execute("UPDATE users SET telegram_id=? WHERE uid=?", (telegram_id, uid))
+    _write_auth(telegram_id, uid)
+    return JSONResponse({"ok": True, "uid": uid, "kind": "link"})
+
+
+@app.post("/api/internal/redeem-invite")
+async def api_redeem_invite(request: Request, _: bool = Depends(_check_internal)):
+    """Relay вызывает: юзер шлёт /start <invite-code> для регистрации."""
+    body = await request.json()
+    code = (body.get("code") or "").strip()
+    telegram_id = body.get("telegram_id")
+    name = (body.get("name") or "").strip() or None
+    if not code or not isinstance(telegram_id, int):
+        raise HTTPException(400, "code and telegram_id required")
+    db = get_db()
+    inv = db.execute("SELECT 1 FROM invite_codes WHERE code=? AND used_by IS NULL", (code,)).fetchone()
+    if not inv:
+        return JSONResponse({"ok": False, "error": "invite_not_found"}, status_code=404)
+    if db.execute("SELECT 1 FROM users WHERE telegram_id=?", (telegram_id,)).fetchone():
+        return JSONResponse({"ok": False, "error": "telegram_already_linked"}, status_code=409)
+    uid = secrets.token_urlsafe(9)
+    login = f"tg_{telegram_id}"
+    n = 0
+    while db.execute("SELECT 1 FROM users WHERE login=?", (login,)).fetchone():
+        n += 1
+        login = f"tg_{telegram_id}_{n}"
+    display = name or f"TG_{telegram_id}"
+    db.execute(
+        "INSERT INTO users (uid, login, name, password_hash, telegram_id, quota_remaining, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (uid, login, display, hash_password(secrets.token_urlsafe(16)), telegram_id, WELCOME_QUOTA, now_iso()),
+    )
+    db.execute("UPDATE invite_codes SET used_by=? WHERE code=?", (uid, code))
+    user_dir = HERMES_USERS_DIR / uid
+    user_dir.mkdir(parents=True, exist_ok=True)
+    if SOUL_TEMPLATE_PATH.exists():
+        (user_dir / "SOUL.md").write_text(SOUL_TEMPLATE_PATH.read_text().format(name=display, login=login))
+    else:
+        (user_dir / "SOUL.md").write_text(f"# {display}\n\nЛичный помощник.\n")
+    (user_dir / "memory.md").touch()
+    _write_auth(telegram_id, uid)
+    return JSONResponse({"ok": True, "uid": uid, "login": login, "kind": "register"})
 
 
 @app.get("/api/history")

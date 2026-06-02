@@ -55,6 +55,8 @@ h1 { margin-top: 0; }
   color: #fff; font: inherit; font-weight: 600; cursor: pointer;
 }
 .card button:hover { filter: brightness(1.1); }
+.card button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.card button.secondary:hover { background: var(--accent); color: #fff; }
 
 .alert {
   padding: 12px 16px; background: var(--alert-bg); border: 1px solid var(--alert-border);

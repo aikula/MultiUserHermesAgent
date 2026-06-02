@@ -115,6 +115,9 @@ services:
       - HERMES_API_KEY=${API_SERVER_KEY}
       - HERMES_MODEL=${FIREWORKS_MODEL}
       - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-20}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_LINK_TTL=${TELEGRAM_LINK_TTL:-600}
+      - WEBAPP_INTERNAL_SECRET=${WEBAPP_INTERNAL_SECRET}
     volumes:
       - /root/.hermes-app:/opt/app/data
       - /root/.hermes/users:/opt/hermes-users:rw
