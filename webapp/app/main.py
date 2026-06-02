@@ -1,5 +1,7 @@
 """Hermes multi-user webapp."""
+import asyncio
 import json
+import logging
 import os
 import secrets
 import string
@@ -14,7 +16,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+logging.basicConfig(
+    level=os.environ.get("WEBAPP_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 from . import chat
+from . import summarizer
 from .db import HERMES_SHARED_DIR, HERMES_USERS_DIR, SOUL_TEMPLATE_PATH_DEFAULT, USERS_DB, get_db, init_db, now_iso
 
 
@@ -334,6 +342,7 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
         raise HTTPException(502, f"Hermes API error: {e}") from e
 
     chat.save_message(user, "web", "assistant", result["content"], result["total_tokens"])
+    asyncio.create_task(summarizer.maybe_summarize(user))
     return JSONResponse({
         "content": result["content"],
         "usage": {

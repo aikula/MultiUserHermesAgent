@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_id INTEGER UNIQUE,
     status TEXT DEFAULT 'active',
     quota_remaining INTEGER,
+    last_summarized_id INTEGER DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS invite_codes (
@@ -64,4 +65,8 @@ CREATE INDEX IF NOT EXISTS idx_chat_uid_created ON chat_history(uid, created_at)
 
 
 def init_db() -> None:
-    get_db().executescript(SCHEMA)
+    conn = get_db()
+    conn.executescript(SCHEMA)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if "last_summarized_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_summarized_id INTEGER DEFAULT 0")

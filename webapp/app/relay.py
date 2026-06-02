@@ -10,6 +10,7 @@ import httpx
 
 from .chat import build_system_prompt, get_history, save_message
 from .db import HERMES_SHARED_DIR, get_db, now_iso
+from .summarizer import maybe_summarize
 
 log = logging.getLogger("relay")
 
@@ -147,6 +148,7 @@ class TelegramRelay:
             total = data.get("usage", {}).get("total_tokens", 0)
             save_message(uid, "telegram", "assistant", content, total)
             await self.send(chat_id, content)
+            asyncio.create_task(maybe_summarize(uid))
         except Exception as e:
             log.exception("process_chat_message error")
             await self.send(chat_id, f"⚠️ Ошибка: {e}")
