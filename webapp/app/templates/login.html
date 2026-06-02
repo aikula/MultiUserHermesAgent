@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Вход</h1>
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-<form method="post" action="/login" class="card">
+<form method="post" action="{{ chat_prefix }}/login" class="card">
   <label>Логин
     <input type="text" name="login" value="{{ login or '' }}" required autofocus>
   </label>
@@ -12,5 +12,5 @@
   </label>
   <button type="submit">Войти</button>
 </form>
-<p class="muted">Нет аккаунта? <a href="/register">Зарегистрироваться</a></p>
+<p class="muted">Нет аккаунта? <a href="{{ chat_prefix }}/register">Зарегистрироваться</a></p>
 {% endblock %}

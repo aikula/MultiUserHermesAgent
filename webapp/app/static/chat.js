@@ -5,6 +5,8 @@
   const sendBtn = document.getElementById("chat-send");
   const usageEl = document.getElementById("chat-usage");
 
+  const PREFIX = window.location.pathname.startsWith("/chat/") ? "/chat" : "";
+
   let busy = false;
 
   function escapeHtml(s) {
@@ -23,8 +25,8 @@
 
   async function loadHistory() {
     try {
-      const r = await fetch("/api/history");
-      if (r.status === 401) { window.location.href = "/login"; return; }
+      const r = await fetch(PREFIX + "/api/history");
+      if (r.status === 401) { window.location.href = PREFIX + "/login"; return; }
       const msgs = await r.json();
       log.innerHTML = "";
       if (msgs.length === 0) {
@@ -59,13 +61,13 @@
     log.appendChild(pending);
     log.scrollTop = log.scrollHeight;
     try {
-      const r = await fetch("/api/chat", {
+      const r = await fetch(PREFIX + "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content }),
       });
       pending.remove();
-      if (r.status === 401) { window.location.href = "/login"; return; }
+      if (r.status === 401) { window.location.href = PREFIX + "/login"; return; }
       if (!r.ok) {
         const err = await r.json().catch(() => ({ detail: r.statusText }));
         renderMessage("assistant", `⚠️ ${err.detail || "ошибка " + r.status}`);
