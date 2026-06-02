@@ -22,6 +22,7 @@ logging.basicConfig(
 )
 
 from . import chat
+from . import quota
 from . import summarizer
 from .db import HERMES_SHARED_DIR, HERMES_USERS_DIR, SOUL_TEMPLATE_PATH_DEFAULT, USERS_DB, get_db, init_db, now_iso
 
@@ -228,7 +229,8 @@ def profile(request: Request, user: str | None = Depends(current_user)):
     link_expires = link_row["expires_at"] if link_row else None
     return _render(request, "profile.html", user={"uid": user, **dict(u)}, soul=soul,
                    link_code=link_code, link_expires=link_expires,
-                   bot_username=os.environ.get("TELEGRAM_BOT_USERNAME", ""))
+                   bot_username=os.environ.get("TELEGRAM_BOT_USERNAME", ""),
+                   usage=quota.get_usage(user))
 
 
 @app.post("/api/profile/generate-link")
@@ -319,6 +321,13 @@ def api_history(request: Request, user: str | None = Depends(current_user)):
     return JSONResponse(chat.get_history(user))
 
 
+@app.get("/api/usage")
+def api_usage(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    return JSONResponse(quota.get_usage(user))
+
+
 @app.post("/api/chat")
 async def api_chat(request: Request, user: str | None = Depends(current_user)):
     if not user:
@@ -342,6 +351,7 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
         raise HTTPException(502, f"Hermes API error: {e}") from e
 
     chat.save_message(user, "web", "assistant", result["content"], result["total_tokens"])
+    quota.record(user, "web", result["total_tokens"])
     asyncio.create_task(summarizer.maybe_summarize(user))
     return JSONResponse({
         "content": result["content"],

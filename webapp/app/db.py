@@ -7,6 +7,7 @@ from pathlib import Path
 USERS_DB = Path(os.environ.get("USERS_DB_PATH", "/opt/app/data/users.db"))
 HERMES_USERS_DIR = Path(os.environ.get("HERMES_USERS_DIR", "/opt/hermes-users"))
 HERMES_SHARED_DIR = Path(os.environ.get("HERMES_SHARED_DIR", "/opt/hermes-shared"))
+QUOTAS_DIR = Path(os.environ.get("QUOTAS_DIR", "/opt/app/data/quotas"))
 SOUL_TEMPLATE_PATH_DEFAULT = Path("/opt/app/data/templates/SOUL.md")
 
 
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_id INTEGER UNIQUE,
     status TEXT DEFAULT 'active',
     quota_remaining INTEGER,
+    quota_used INTEGER DEFAULT 0,
+    last_alert_pct INTEGER DEFAULT 0,
     last_summarized_id INTEGER DEFAULT 0,
     created_at TEXT NOT NULL
 );
@@ -70,3 +73,7 @@ def init_db() -> None:
     cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
     if "last_summarized_id" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN last_summarized_id INTEGER DEFAULT 0")
+    if "quota_used" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN quota_used INTEGER DEFAULT 0")
+    if "last_alert_pct" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_alert_pct INTEGER DEFAULT 0")

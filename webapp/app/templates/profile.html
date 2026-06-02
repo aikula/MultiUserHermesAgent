@@ -14,7 +14,18 @@
         <span class="muted">не привязан</span>
       {% endif %}
     </dd>
-    <dt>Квота</dt>         <dd>{{ "{:,}".format(user.quota_remaining or 0).replace(",", " ") }} токенов осталось</dd>
+    <dt>Квота</dt>         <dd>
+      <div class="quota-bar"><div class="quota-fill" style="width: {{ usage.pct }}%"></div></div>
+      <div class="quota-text">
+        {{ "{:,}".format(usage.used).replace(",", " ") }} / {{ "{:,}".format(usage.welcome_quota).replace(",", " ") }} токенов
+        ({{ usage.pct }}%)
+        {% if usage.pct >= usage.alert_threshold_pct %}<span class="badge-warn">⚠️ близко к лимиту</span>{% endif %}
+      </div>
+      <div class="quota-detail muted">
+        Сегодня: {{ "{:,}".format(usage.today_tokens).replace(",", " ") }} токенов, {{ usage.today_calls }} вызовов ·
+        В этом месяце: {{ "{:,}".format(usage.month_tokens).replace(",", " ") }} токенов, {{ usage.month_calls }} вызовов
+      </div>
+    </dd>
   </dl>
 </div>
 

@@ -40,6 +40,12 @@ body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-seri
 h1 { margin-top: 0; }
 .muted { color: var(--muted); font-size: 13px; }
 
+.quota-bar { width: 100%; height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; margin: 4px 0; }
+.quota-fill { height: 100%; background: linear-gradient(90deg, #10b981, #3b82f6); transition: width 0.3s; }
+.quota-text { font-size: 14px; margin-bottom: 4px; }
+.quota-detail { font-size: 12px; }
+.badge-warn { display: inline-block; background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-left: 6px; }
+
 .card {
   background: var(--card); border: 1px solid var(--border); border-radius: 8px;
   padding: 20px; margin: 16px 0; display: flex; flex-direction: column; gap: 12px;
