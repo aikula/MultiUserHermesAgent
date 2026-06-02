@@ -140,6 +140,16 @@ docker exec hermes-gateway hermes doctor
 - Костыль `dashboard.command` отключает s6-сервис `gateway-default` из-за lock-конфликта на общем volume `/opt/data`. Полное решение — развести volume логов (требует миграции).
 - `fallback_model` закомментирован — при недоступности Fireworks агент встанет.
 
+## Cron / бэкапы (multi-user)
+
+Хост-cron для multi-user webapp:
+
+- `30 3 * * * /root/Agents/Hermes/cron/backup.sh` — ежедневный бэкап `users.db` + `users/<uid>/` с ротацией 7 дней
+- Скрипт: `cron/backup.sh` (симлинк из `/root/.hermes-app/cron/`)
+- Логи: `/root/.hermes-app/logs/backup-YYYY-MM-DD.log`
+
+Quota tracking НЕ использует cron — webapp инкрементально обновляет `/root/.hermes-app/quotas/<uid>/<YYYY-MM-DD>.json` при каждом вызове (через `app/quota.py`).
+
 ## Ссылки
 
 - Агент: https://github.com/NousResearch/hermes-agent
