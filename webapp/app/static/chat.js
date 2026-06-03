@@ -9,6 +9,12 @@
 
   let busy = false;
 
+  // Get CSRF token from meta tag
+  function getCsrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute("content") : "";
+  }
+
   function escapeHtml(s) {
     return s.replace(/[&<>"']/g, c => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -57,7 +63,7 @@
       try {
         const r = await fetch(PREFIX + "/api/approve", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
           body: JSON.stringify({ intent_id: approval.intent_id }),
         });
         if (r.ok) {
@@ -83,7 +89,7 @@
       try {
         const r = await fetch(PREFIX + "/api/reject", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
           body: JSON.stringify({ intent_id: approval.intent_id }),
         });
         if (r.ok) {
@@ -141,7 +147,7 @@
     try {
       const r = await fetch(PREFIX + "/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
         body: JSON.stringify({ content }),
       });
       pending.remove();

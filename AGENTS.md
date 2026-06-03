@@ -4,22 +4,30 @@
 
 ## Назначение
 
-Этот репозиторий содержит **оркестрацию развёртывания** [Hermes Agent](https://github.com/NousResearch/hermes-agent) от Nous Research. Агент работает в Docker-контейнерах за Traefik reverse proxy.
+Этот репозиторий содержит **multi-user веб-приложение** и **оркестрацию развёртывания** [Hermes Agent](https://github.com/NousResearch/hermes-agent) от Nous Research.
 
-В этом репо **нет** исходного кода агента и **нет** его конфигурации (`config.yaml`, скиллов, памяти). Здесь только:
-- `docker-compose.yml` — описание сервисов
+### Что есть в репозитории
+
+- `webapp/` — FastAPI multi-user веб-приложение (чат, профиль, email, Telegram relay)
+- `docker-compose.yml` — описание сервисов (gateway, webapp, dashboard)
 - `.env.hermes` — секреты (НЕ в git)
 - `.env.example` — шаблон секретов
-- `.gitignore` — исключения
+- `.github/workflows/ci.yml` — CI pipeline (ruff, pytest, bandit)
+- `docs/specs/` — спецификации функциональности
+- `cron/` — скрипты бэкапов
 
-Основная конфигурация и данные живут в `/root/.hermes/` на хосте и пробрасываются в контейнеры через bind-mount.
+### Чего НЕТ в репозитории
+
+- Исходный код Hermes Agent (он в `nousresearch/hermes-agent`)
+- Конфигурация агента (`config.yaml`, скиллы, память) — живёт в `/root/.hermes/`
 
 ## Архитектура
 
 ```
 Internet ──► Traefik (:443, tghub-network)
-              ├─► hermes-dashboard :9119  (UI, basic-auth)
-              └─► hermes-gateway   :8642  (OpenAI-совместимый API)
+              ├─► hermes-dashboard :9119  (admin UI, basic-auth)
+              ├─► hermes-webapp   :9000   (multi-user chat + Telegram relay)
+              └─► hermes-gateway  :8642   (Hermes API, OpenAI-compatible)
                    │
                    └─► /opt/data → /root/.hermes (bind-mount)
                           ├─ config.yaml

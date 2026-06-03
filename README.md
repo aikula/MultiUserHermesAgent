@@ -1,105 +1,118 @@
-# Hermes Agent — развёртывание
+# Multi-User Hermes Agent
 
-Оркестрация [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous Research) в Docker-контейнерах за Traefik reverse proxy.
+Multi-user AI assistant for managers with webapp, Telegram relay, per-user email integration, and controlled action execution.
 
-## Что это
+## What is this
 
-Самообучающийся AI-агент с TUI, CLI, и gateway для мессенджеров (Telegram, Discord, Slack, WhatsApp). В этом репозитории — только **deployment** (compose, env, secrets), сам агент работает из образа `nousresearch/hermes-agent`.
+A multi-user deployment of [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous Research) with:
+- **Webapp** — FastAPI multi-user interface with auth, chat, profile, email integration
+- **Telegram relay** — per-user Telegram bot with file handling
+- **Approval flow** — single-confirmation UX for external actions (email, calendar)
+- **P0 security** — encrypted secrets, hard quota, CSRF, rate limiting
 
-## Состав
+## Architecture
 
-- **Gateway** (`hermes-gateway`) — главный сервис: CLI, шлюз мессенджеров, OpenAI-совместимый API на порту 8642.
-- **Dashboard** (`hermes-dashboard`) — web-интерфейс на порту 9119, доступен по https://hermes.kulinich.ru.
+```
+Internet ──► Traefik (:443)
+              ├─► hermes-dashboard :9119  (admin UI)
+              ├─► hermes-webapp   :9000   (multi-user chat)
+              └─► hermes-gateway  :8642   (Hermes API)
+                   │
+                   └─► /opt/data → /root/.hermes (bind-mount)
+```
 
-Оба сервиса работают за Traefik (внешняя сеть `tghub-network`) с TLS и basic-auth.
+### Services
 
-## Доступы
-
-| Сервис | URL | Авторизация |
+| Service | Port | Description |
 |---|---|---|
-| Dashboard | https://hermes.kulinich.ru | basic-auth (логин/пароль в `.env.hermes`) |
-| OpenAI API | http://hermes-gateway:8642/v1/ (внутри docker-сети) | Bearer `API_SERVER_KEY` из `.env.hermes` |
+| `hermes-gateway` | 8642 | Hermes Agent API (OpenAI-compatible) |
+| `hermes-webapp` | 9000 | Multi-user FastAPI webapp + Telegram relay |
+| `hermes-dashboard` | 9119 | Admin dashboard (basic-auth) |
 
-Данные авторизации и ключи **не хранятся в репозитории** — только в `.env.hermes` (chmod 600, в `.gitignore`).
-
-## Запуск
+## Quick Start
 
 ```bash
-# одноразовая настройка
+# Setup
 cp .env.example .env.hermes
 chmod 600 .env.hermes
-$EDITOR .env.hermes   # заполнить реальные значения
+$EDITOR .env.hermes   # fill in real values
 
-# поднять
+# Run
 docker compose --env-file .env.hermes up -d
 
-# проверить
+# Verify
 docker ps --filter name=hermes
-docker exec hermes-gateway hermes doctor
+curl -fsS http://localhost:9000/health
 ```
 
-## Конфигурация
+## Webapp Features
 
-- `docker-compose.yml` — описание сервисов, healthcheck, ресурсы, Traefik-метки
-- `.env.hermes` — секреты, домен, прокси, порты
-- `/root/.hermes/config.yaml` — главный конфиг агента (вне репо)
+- **Auth** — register with invite code, login, session cookies
+- **Chat** — per-user memory scoping via `X-Hermes-Session-Key`
+- **Profile** — name, password, SOUL.md, email settings
+- **Email integration** — IMAP/SMTP with encrypted credentials
+- **Telegram relay** — `@aik_hermesbot` with file handling
+- **Approval flow** — single confirmation for external actions
+- **Manager templates** — 6 demo scenarios (email, meeting, tasks, etc.)
 
-Подробнее см. [AGENTS.md](AGENTS.md).
+## Security
 
-## Обслуживание
+### P0 Hardening (implemented)
+
+- **Secrets not in LLM prompt** — email passwords never exposed to model
+- **Encryption at rest** — Fernet encryption for email credentials
+- **Hard quota** — blocks requests when `quota_remaining <= 0`
+- **Rate limiting** — 10 login attempts per 5 minutes
+- **CSRF protection** — token validation for browser POST
+- **Secure cookies** — `httponly`, `samesite=lax`, `secure`
+- **File upload safety** — UUID filenames, dangerous extension rejection
+
+### Security Model
+
+- Each user has isolated memory, files, and credentials
+- External actions (email send) require single confirmation
+- Internal endpoints use `X-Internal-Secret` header
+- All secrets in `.env.hermes` (chmod 600, not in git)
+
+## Configuration
+
+| File | Purpose | In git? |
+|---|---|---|
+| `docker-compose.yml` | Service definitions | Yes |
+| `.env.example` | Secret template | Yes |
+| `.env.hermes` | Actual secrets | No |
+| `/root/.hermes/config.yaml` | Agent config | No |
+
+## Testing
 
 ```bash
-# рестарт
-docker compose --env-file .env.hermes restart
-
-# логи
-docker logs -f hermes-gateway
-
-# обновить образ
-docker compose --env-file .env.hermes pull
-docker compose --env-file .env.hermes up -d
-
-# диагностика
-docker exec hermes-gateway hermes doctor
+cd webapp
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q           # 77 tests
+ruff check app      # lint
+bandit -r app -ll   # security
 ```
 
-## Безопасность
+## Environment Variables
 
-- Контейнеры работают под `uid=1000` (не root)
-- `tirith_fail_open: false` — URL-сканер не пропускает при сбое
-- `redact_pii: true` — PII в логах вырезается
-- `redact_secrets: true` — секреты в логах вырезаются
-- `gateway.strict: true` — строгая валидация входящих
-- Dashboard за basic-auth, весь трафик через TLS
+Required:
+- `HERMES_API_KEY` — gateway API key
+- `WEBAPP_INTERNAL_SECRET` — internal API secret
+- `JWT_SECRET` — session signing key
+- `TELEGRAM_BOT_TOKEN` — Telegram bot token
+- `TELEGRAM_ADMIN_CHAT_ID` — admin notifications
 
-Полная политика безопасности: https://hermes-agent.nousresearch.com/docs/user-guide/security
+Optional:
+- `ENCRYPTION_KEY` — email credential encryption
+- `WELCOME_QUOTA` — initial token quota (default: 2M)
+- `ALERT_THRESHOLD_PCT` — quota alert threshold (default: 80%)
 
-## Структура данных
+## License
 
-Данные агента (не в репозитории):
+Deployment code — MIT. Hermes Agent — MIT (Nous Research).
 
-```
-/root/.hermes/
-├── config.yaml          # главный конфиг
-├── SOUL.md              # персона
-├── skills/              # 23 скилла
-├── memories/            # долговременная память
-├── sessions/            # история сессий
-├── kanban.db            # SQLite: задачи
-├── response_store.db    # SQLite: кэш ответов
-├── logs/                # логи
-├── cron/                # запланированные задачи
-└── audio_cache/, image_cache/  # медиа-кэш
-```
-
-Bind-mount `/root/.hermes:/opt/data` в обоих контейнерах.
-
-## Лицензия
-
-Код оркестрации — MIT. Сам агент — MIT (Nous Research).
-
-## Ссылки
+## Links
 
 - Hermes Agent: https://github.com/NousResearch/hermes-agent
-- Документация: https://hermes-agent.nousresearch.com/docs/
-- Discord Nous Research: https://discord.gg/NousResearch
+- Documentation: https://hermes-agent.nousresearch.com/docs/
+- Discord: https://discord.gg/NousResearch

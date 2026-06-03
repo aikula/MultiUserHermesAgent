@@ -1,5 +1,7 @@
 """Hermes multi-user webapp."""
 import asyncio
+import hmac
+import hashlib
 import json
 import logging
 import os
@@ -35,6 +37,21 @@ def _check_rate_limit(ip: str) -> bool:
         return False
     _login_attempts[ip].append(now)
     return True
+
+
+# --- CSRF protection ---
+def generate_csrf_token(session_token: str) -> str:
+    """Generate CSRF token from session token."""
+    secret = os.environ.get("JWT_SECRET", "")
+    return hmac.new(secret.encode(), session_token.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def validate_csrf_token(session_token: str, csrf_token: str) -> bool:
+    """Validate CSRF token matches session."""
+    if not session_token or not csrf_token:
+        return False
+    expected = generate_csrf_token(session_token)
+    return hmac.compare_digest(expected, csrf_token)
 
 logging.basicConfig(
     level=os.environ.get("WEBAPP_LOG_LEVEL", "INFO").upper(),
@@ -100,10 +117,41 @@ def current_user(request: Request) -> str | None:
     return read_token(token) if token else None
 
 
+def require_csrf(request: Request) -> None:
+    """Validate CSRF token for browser POST requests.
+    Internal endpoints with X-Internal-Secret are exempt.
+    """
+    # Internal endpoints are exempt from CSRF
+    if request.headers.get("X-Internal-Secret"):
+        return
+
+    session_token = request.cookies.get("session")
+    if not session_token:
+        raise HTTPException(401, "not authenticated")
+
+    # Get CSRF token from form data or header
+    csrf_token = request.headers.get("X-CSRF-Token")
+    if not csrf_token:
+        # For form submissions, we'll need to read the body
+        # But since we're using JSON for API, check header first
+        raise HTTPException(403, "CSRF token missing")
+
+    if not validate_csrf_token(session_token, csrf_token):
+        raise HTTPException(403, "CSRF token invalid")
+
+
 app = FastAPI(title="hermes-webapp", version="0.1.0", root_path="/chat")
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 templates.env.globals["chat_prefix"] = "/chat"
+
+
+def _get_csrf_token(request: Request) -> str:
+    """Get CSRF token for current session."""
+    session_token = request.cookies.get("session", "")
+    if session_token:
+        return generate_csrf_token(session_token)
+    return ""
 
 
 @app.middleware("http")
@@ -144,6 +192,7 @@ def health() -> dict:
 
 def _render(request: Request, name: str, **ctx) -> HTMLResponse:
     status_code = ctx.pop("status_code", 200)
+    ctx["csrf_token"] = _get_csrf_token(request)
     return templates.TemplateResponse(request, name, ctx, status_code=status_code)
 
 
@@ -452,6 +501,10 @@ def api_usage(request: Request, user: str | None = Depends(current_user)):
 async def api_chat(request: Request, user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
+
+    # CSRF validation
+    require_csrf(request)
+
     body = await request.json()
     content = (body.get("content") or "").strip()
     if not content:
@@ -533,6 +586,10 @@ def _extract_intent_from_response(content: str) -> dict | None:
 async def api_approve(request: Request, user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
+
+    # CSRF validation
+    require_csrf(request)
+
     body = await request.json()
     intent_id = body.get("intent_id")
     if not intent_id:
@@ -574,6 +631,10 @@ async def api_approve(request: Request, user: str | None = Depends(current_user)
 async def api_reject(request: Request, user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
+
+    # CSRF validation
+    require_csrf(request)
+
     body = await request.json()
     intent_id = body.get("intent_id")
     if not intent_id:
