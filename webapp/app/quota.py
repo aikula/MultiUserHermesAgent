@@ -3,7 +3,7 @@
 Tracks token usage per turn, decrements users.quota_remaining, and maintains
 a daily JSON snapshot per user for human inspection.
 
-NOT a hard cap in v1 — only observation + admin alert at threshold.
+HARD CAP: requests are blocked when quota_remaining <= 0.
 """
 import json
 import logging
@@ -18,6 +18,20 @@ ALERT_THRESHOLD_PCT = int(os.environ.get("ALERT_THRESHOLD_PCT", "80"))
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_ADMIN_BOT_TOKEN = os.environ.get("TELEGRAM_ADMIN_BOT_TOKEN", "").strip() or TELEGRAM_BOT_TOKEN
 TELEGRAM_ADMIN_CHAT_ID = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
+
+
+def check_quota(uid: str) -> tuple[bool, str]:
+    """Preflight quota check. Returns (ok, error_message).
+    Call BEFORE making Hermes API request.
+    """
+    remaining = _quota_remaining(uid)
+    if remaining <= 0:
+        return False, (
+            f"⚠️ Квота исчерпана. Использовано {WELCOME_QUOTA:,} из {WELCOME_QUOTA:,} токенов.\n"
+            "Обратитесь к администратору для продления квоты."
+        )
+    # Warn if close to limit (but still allow)
+    return True, ""
 
 
 def _daily_path(uid: str, date: str) -> Path:

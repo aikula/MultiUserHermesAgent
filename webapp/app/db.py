@@ -70,7 +70,22 @@ CREATE TABLE IF NOT EXISTS quotas (
     month TEXT,
     tokens_used INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS action_intents (
+    id TEXT PRIMARY KEY,
+    uid TEXT NOT NULL REFERENCES users(uid),
+    action_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending_approval',
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    approved_at TEXT,
+    executed_at TEXT,
+    result_json TEXT,
+    error TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_chat_uid_created ON chat_history(uid, created_at);
+CREATE INDEX IF NOT EXISTS idx_intents_uid_status ON action_intents(uid, status);
 """
 
 
@@ -98,3 +113,23 @@ def init_db() -> None:
         conn.execute("ALTER TABLE users ADD COLUMN email_password TEXT")
     if "google_connected" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN google_connected INTEGER DEFAULT 0")
+
+    # Migration: encrypt plaintext email passwords
+    _migrate_plaintext_passwords(conn)
+
+
+def _migrate_plaintext_passwords(conn: sqlite3.Connection) -> None:
+    """Encrypt any plaintext email passwords that haven't been migrated yet."""
+    try:
+        from .secrets_store import is_encrypted, encrypt
+    except ImportError:
+        return  # secrets_store not available yet
+
+    rows = conn.execute(
+        "SELECT uid, email_password FROM users WHERE email_password IS NOT NULL AND email_password != ''"
+    ).fetchall()
+    for row in rows:
+        uid, pwd = row["uid"], row["email_password"]
+        if not is_encrypted(pwd):
+            encrypted = encrypt(pwd, uid)
+            conn.execute("UPDATE users SET email_password=? WHERE uid=?", (encrypted, uid))

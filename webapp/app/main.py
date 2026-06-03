@@ -5,6 +5,8 @@ import logging
 import os
 import secrets
 import string
+import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +17,24 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Header, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+from .secrets_store import encrypt, decrypt
+
+# --- Rate limiter (in-memory, per IP) ---
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_RATE_LIMIT_WINDOW = 300  # 5 minutes
+_RATE_LIMIT_MAX = 10  # max attempts per window
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if request is allowed, False if rate-limited."""
+    now = time.time()
+    cutoff = now - _RATE_LIMIT_WINDOW
+    _login_attempts[ip] = [t for t in _login_attempts[ip] if t > cutoff]
+    if len(_login_attempts[ip]) >= _RATE_LIMIT_MAX:
+        return False
+    _login_attempts[ip].append(now)
+    return True
 
 logging.basicConfig(
     level=os.environ.get("WEBAPP_LOG_LEVEL", "INFO").upper(),
@@ -152,8 +172,8 @@ def register_submit(
     invite_code: str = Form(...),
 ):
     login = login.strip().lower()
-    if not login or len(password) < 6:
-        return _render(request, "register.html", error="Логин пустой или пароль < 6 символов", login=login, status_code=400)
+    if not login or len(password) < 10:
+        return _render(request, "register.html", error="Логин пустой или пароль < 10 символов", login=login, status_code=400)
 
     db = get_db()
     inv = db.execute("SELECT 1 FROM invite_codes WHERE code=? AND used_by IS NULL", (invite_code,)).fetchone()
@@ -192,13 +212,18 @@ def login_page(request: Request, user: str | None = Depends(current_user)):
 
 @app.post("/login")
 def login_submit(request: Request, login: str = Form(...), password: str = Form(...)):
+    # Rate limit check
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        return _render(request, "login.html", error="Слишком много попыток. Подождите 5 минут.", login=login, status_code=429)
+
     login = login.strip().lower()
     db = get_db()
     row = db.execute("SELECT uid, password_hash FROM users WHERE login=?", (login,)).fetchone()
     if not row or not verify_password(password, row["password_hash"]):
         return _render(request, "login.html", error="Неверный логин или пароль", login=login, status_code=200)
     resp = RedirectResponse("/profile", status_code=303)
-    resp.set_cookie("session", make_token(row["uid"]), httponly=True, samesite="lax", max_age=JWT_TTL_HOURS * 3600)
+    resp.set_cookie("session", make_token(row["uid"]), httponly=True, samesite="lax", secure=True, max_age=JWT_TTL_HOURS * 3600)
     return resp
 
 
@@ -255,8 +280,8 @@ async def api_profile_update(request: Request, user: str | None = Depends(curren
     if new_password:
         if not current_password:
             raise HTTPException(400, "current_password required to change password")
-        if len(new_password) < 6:
-            raise HTTPException(400, "new password too short (min 6 chars)")
+        if len(new_password) < 10:
+            raise HTTPException(400, "new password too short (min 10 chars)")
         if not verify_password(current_password, row["password_hash"]):
             raise HTTPException(403, "current password is wrong")
         db.execute("UPDATE users SET password_hash=? WHERE uid=?", (hash_password(new_password), user))
@@ -294,11 +319,14 @@ async def api_profile_email(request: Request, user: str | None = Depends(current
     if not all([imap_host, smtp_host, email_login, email_password]):
         raise HTTPException(400, "all fields required")
 
+    # Encrypt password before storing
+    encrypted_password = encrypt(email_password, user)
+
     db = get_db()
     db.execute(
         "UPDATE users SET email_imap_host=?, email_imap_port=?, email_smtp_host=?, "
         "email_smtp_port=?, email_login=?, email_password=? WHERE uid=?",
-        (imap_host, int(imap_port), smtp_host, int(smtp_port), email_login, email_password, user),
+        (imap_host, int(imap_port), smtp_host, int(smtp_port), email_login, encrypted_password, user),
     )
     return JSONResponse({"ok": True})
 
@@ -430,6 +458,11 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
         raise HTTPException(400, "empty content")
     if len(content) > 8000:
         raise HTTPException(400, "message too long (max 8000 chars)")
+
+    # Hard quota check — block before Hermes call
+    ok, err_msg = quota.check_quota(user)
+    if not ok:
+        raise HTTPException(429, err_msg)
 
     chat.save_message(user, "web", "user", content, 0)
     history = chat.get_history(user)

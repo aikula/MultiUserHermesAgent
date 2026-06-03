@@ -5,6 +5,7 @@ from pathlib import Path
 import httpx
 
 from .db import HERMES_USERS_DIR, get_db, now_iso
+from .skills.manager_templates import get_manager_templates_block
 
 HERMES_API_URL = os.environ.get("HERMES_API_URL", "http://hermes-gateway:8642")
 HERMES_API_KEY = os.environ["HERMES_API_KEY"]
@@ -68,43 +69,33 @@ def build_system_prompt(uid: str) -> str:
             f"```\n"
         )
 
-    # Email credentials
+    # Email capability (NEVER expose credentials to LLM)
     db = get_db()
     user = db.execute(
-        "SELECT email_imap_host, email_imap_port, email_smtp_host, email_smtp_port, "
-        "email_login, email_password, google_connected FROM users WHERE uid=?",
+        "SELECT email_login, email_imap_host, google_connected FROM users WHERE uid=?",
         (uid,),
     ).fetchone()
     if user:
         if user["email_login"] and user["email_imap_host"]:
             parts.append(
-                f"\n## Доступ к почте\n"
-                f"У пользователя подключена почта. Для работы с email используй Python (imaplib/smtplib) в sandbox.\n"
-                f"IMAP: {user['email_imap_host']}:{user['email_imap_port']}\n"
-                f"SMTP: {user['email_smtp_host']}:{user['email_smtp_port']}\n"
-                f"Логин: {user['email_login']}\n"
-                f"Пароль: {user['email_password']}\n"
-                f"Пример чтения:\n"
-                f"```python\n"
-                f"import imaplib\n"
-                f"mail = imaplib.IMAP4_SSL('{user['email_imap_host']}', {user['email_imap_port']})\n"
-                f"mail.login('{user['email_login']}', '{user['email_password']}')\n"
-                f"mail.select('INBOX')\n"
-                f"status, messages = mail.search(None, 'ALL')\n"
-                f"```\n"
+                "\n## Доступ к почте\n"
+                f"У пользователя подключена почта ({user['email_login']}).\n"
+                "Для работы с email ИСПОЛЬЗУЙ backend-инструмент email_tools — НЕ пиши скрипты с imaplib/smtplib.\n"
+                "Доступные действия:\n"
+                "- email_check_connection — проверить подключение\n"
+                "- email_list_folders — список папок\n"
+                "- email_search — поиск писем\n"
+                "- email_read — прочитать письмо по ID\n"
+                "- email_send — отправить письмо (требует подтверждения)\n"
             )
         if user["google_connected"]:
-            user_token_path = f"/opt/data/users/{uid}/google_token.json"
             parts.append(
-                f"\n## Доступ к Google Workspace\n"
-                f"У пользователя подключён Google. Для работы с Gmail/Calendar/Drive используй google_api.py.\n"
-                f"Перед вызовом установи переменную окружения:\n"
-                f"```bash\n"
-                f"export HERMES_HOME=/opt/data/users/{uid}\n"
-                f"python /opt/data/skills/productivity/google-workspace/scripts/google_api.py gmail search \"is:unread\"\n"
-                f"```\n"
-                f"Или используй Python с библиотекой google-api-python-client, загружая токен из {user_token_path}.\n"
+                "\n## Доступ к Google Workspace\n"
+                "У пользователя подключён Google. Для работы с Gmail/Calendar/Drive используй google_api.py.\n"
             )
+
+    # Manager skill templates (routing + 6 demo formats)
+    parts.append("\n" + get_manager_templates_block())
 
     return "\n\n".join(parts).strip()
 

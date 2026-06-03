@@ -40,6 +40,9 @@ ALLOWED_EXTENSIONS = {
     '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg',
 }
 
+# Dangerous extensions that should NEVER be saved (even renamed)
+DANGEROUS_EXTENSIONS = {'.exe', '.bat', '.cmd', '.com', '.msi', '.scr', '.pif', '.vbs', '.js', '.ws', '.wsh'}
+
 
 def _gen_code(n: int = 6) -> str:
     return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
@@ -79,25 +82,24 @@ def _get_user_files_dir(uid: str) -> Path:
 
 
 def _safe_filename(filename: str, files_dir: Path) -> str:
-    """Generate safe filename, avoiding conflicts."""
+    """Generate safe UUID-based filename, avoiding conflicts and dangerous extensions."""
+    import uuid
+
     # Remove path components
     name = Path(filename).name
     if not name or name.startswith('.'):
         name = f"file_{int(time.time())}"
 
-    # Check extension
+    # Check extension — reject dangerous ones
     ext = Path(name).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        name = name + ".txt"
+    if ext in DANGEROUS_EXTENSIONS:
+        ext = ".txt"
+    elif ext not in ALLOWED_EXTENSIONS:
+        ext = ".txt"
 
-    # Avoid conflicts by adding timestamp
-    target = files_dir / name
-    if target.exists():
-        stem = Path(name).stem
-        ext = Path(name).suffix
-        name = f"{stem}_{int(time.time())}{ext}"
-
-    return name
+    # Use UUID to avoid conflicts and path traversal
+    safe_name = f"{uuid.uuid4().hex[:12]}{ext}"
+    return safe_name
 
 
 class TelegramRelay:
@@ -146,6 +148,11 @@ class TelegramRelay:
         Returns (ok, message, saved_filename).
         """
         try:
+            # Pre-check: reject dangerous extensions before downloading
+            ext = Path(original_name).suffix.lower()
+            if ext in DANGEROUS_EXTENSIONS:
+                return False, f"❌ Файл с расширением {ext} запрещён по соображениям безопасности.", None
+
             # Get file info from Telegram
             file_info = await self._tg("getFile", file_id=file_id)
             file_path = file_info.get("file_path")
@@ -162,7 +169,7 @@ class TelegramRelay:
             r = await self._client.get(url)
             r.raise_for_status()
 
-            # Save to user's folder
+            # Save to user's folder (UUID-based safe filename)
             files_dir = _get_user_files_dir(uid)
             safe_name = _safe_filename(original_name, files_dir)
             target = files_dir / safe_name
@@ -217,6 +224,13 @@ class TelegramRelay:
         return False, f"Ошибка: {r.status_code}", None
 
     async def process_chat_message(self, uid: str, chat_id: int, text: str):
+        # Hard quota check — block before Hermes call
+        from .quota import check_quota
+        ok, err_msg = check_quota(uid)
+        if not ok:
+            await self.send(chat_id, err_msg)
+            return
+
         save_message(uid, "telegram", "user", text, 0)
         history = get_history(uid)
         messages = [{"role": "system", "content": build_system_prompt(uid)}]

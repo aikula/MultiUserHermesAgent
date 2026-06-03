@@ -25,7 +25,36 @@
 3. **Кнопка «Отключить» почту** — шаблон обновлён, кнопка теперь отображается при наличии `email_login` в БД.
 4. **Ссылка «Профиль»** — проверена, работает корректно (cookie `session` → `current_user` → profile page). Если не активна — возможно, не была залогинена сессия.
 
-**Статус:** Chat работает ✅, Gateway без polling ✅, почта сохраняется ✅
+## P0 Security Hardening (03.06.2026)
+
+### P0-1: Секреты убраны из LLM-промпта
+- `chat.py:build_system_prompt()` больше НЕ инжектирует пароли IMAP/SMTP
+- Email capability описывается текстом: "У пользователя подключена почта (user@domain.com)"
+- Для работы с email агент должен использовать backend-инструмент `email_tools.py`
+- Код с imaplib/smtplib больше не генерируется (нет секретов в промпте)
+
+### P0-2: Шифрование секретов при хранении
+- `secrets_store.py` — Fernet шифрование (PBKDF2-HMAC-SHA256 key derivation)
+- Email пароли хранятся как `enc:v1:...` в SQLite
+- Автоматическая миграция: при старте контейнера plaintext пароли шифруются
+- Тест: `docker exec hermes-webapp python3 -c "from app.secrets_store import encrypt, decrypt; print(decrypt(encrypt('test', 'user1'), 'user1'))"`
+
+### P0-3: Жёсткий квотный лимит
+- `quota.py:check_quota()` — проверка перед вызовом Hermes
+- Если `quota_remaining <= 0` → HTTP 429 с сообщением
+- Работает и в webapp, и в Telegram relay
+
+### P0-4: Безопасность сессий
+- Rate limiting на `/api/login` — 10 попыток за 5 минут (in-memory)
+- Cookie flags: `httponly=True`, `samesite=lax`, `secure=True`
+- Минимальная длина пароля: 10 символов
+
+### P0-5: Безопасность загрузки файлов
+- UUID-имена файлов (никаких path traversal)
+- Dangerous extensions (.exe, .bat, .cmd, .vbs) отклоняются ДО скачивания
+- Проверка размера файла перед скачиванием
+
+**Статус:** Chat работает ✅, Gateway без polling ✅, почта сохраняется ✅, P0 security ✅
 
 ## Конфигурация
 
@@ -271,11 +300,13 @@ print(build_system_prompt('EDRR3qt7dOOJ'))
 " | grep -iE "(imap|smtp|email|google|files|файл)"
 ```
 
-- [x] Если creds заданы → в system prompt есть IMAP/SMTP хосты
-- [ ] Если есть файлы → в system prompt есть секция "Файлы пользователя"
-- [ ] Если creds не заданы → system prompt без email секции
+- [x] Если creds заданы → в system prompt есть текст "У пользователя подключена почта (user@domain.com)"
+- [x] НЕТ секретов в промпте (пароли IMAP/SMTP не инжектируются)
+- [x] Если есть файлы → в system prompt есть секция "Файлы пользователя"
+- [x] Если creds не заданы → system prompt без email секции
+- [x] Manager templates — routing block + 6 demo formats
 
-> **Результат:** system prompt содержит IMAP/SMTP creds дляalice (Yandex) + файлы.
+> **Результат:** system prompt содержит email capability text (без секретов) + файлы + manager templates.
 
 ---
 
