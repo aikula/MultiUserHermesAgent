@@ -9,7 +9,6 @@ import logging
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from .db import get_db, now_iso
 

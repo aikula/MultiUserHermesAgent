@@ -1,6 +1,4 @@
 """Tests: Approval flow — spec 02."""
-import json
-import time
 
 import pytest
 

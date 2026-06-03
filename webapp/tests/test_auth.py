@@ -1,7 +1,6 @@
 """Tests: Auth/session — P0-4 from spec 01."""
 import asyncio
 
-import pytest
 
 
 class TestAuthSession:

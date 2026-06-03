@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 
 from .chat import build_system_prompt, get_history, save_message
-from .db import HERMES_USERS_DIR, HERMES_SHARED_DIR, get_db, now_iso
+from .db import HERMES_USERS_DIR, HERMES_SHARED_DIR
 from .quota import record as quota_record
 
 # Action types that require approval before execution
@@ -31,7 +31,7 @@ def _extract_intent_from_response(content: str) -> dict | None:
     except json.JSONDecodeError:
         pass
     return None
-from .summarizer import maybe_summarize
+from .summarizer import maybe_summarize  # noqa: E402
 
 log = logging.getLogger("relay")
 
@@ -207,7 +207,7 @@ class TelegramRelay:
         """Привязать существующий web-юзер через link-code. Возвращает (ok, message, uid)."""
         try:
             r = await self._client.post(
-                f"http://localhost:9000/api/internal/consume-link-code",
+                "http://localhost:9000/api/internal/consume-link-code",
                 json={"code": code, "telegram_id": telegram_id},
                 headers={"X-Internal-Secret": os.environ.get("WEBAPP_INTERNAL_SECRET", "")},
             )
@@ -226,7 +226,7 @@ class TelegramRelay:
         """Регистрация нового юзера через Telegram с invite-code."""
         try:
             r = await self._client.post(
-                f"http://localhost:9000/api/internal/redeem-invite",
+                "http://localhost:9000/api/internal/redeem-invite",
                 json={"code": code, "telegram_id": telegram_id},
                 headers={"X-Internal-Secret": os.environ.get("WEBAPP_INTERNAL_SECRET", "")},
             )

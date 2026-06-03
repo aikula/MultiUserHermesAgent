@@ -1,5 +1,4 @@
 """Tests: Manager skills — spec 03."""
-import pytest
 
 from app.skills.manager_templates import (
     MANAGER_ROUTING_BLOCK,

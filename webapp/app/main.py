@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .secrets_store import encrypt, decrypt
+from .secrets_store import encrypt
 
 # --- Rate limiter (in-memory, per IP) ---
 _login_attempts: dict[str, list[float]] = defaultdict(list)
@@ -41,10 +41,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-from . import chat
-from . import quota
-from . import summarizer
-from .db import HERMES_SHARED_DIR, HERMES_USERS_DIR, SOUL_TEMPLATE_PATH_DEFAULT, USERS_DB, get_db, init_db, now_iso
+from . import chat  # noqa: E402
+from . import quota  # noqa: E402
+from . import summarizer  # noqa: E402
+from .db import HERMES_SHARED_DIR, HERMES_USERS_DIR, SOUL_TEMPLATE_PATH_DEFAULT, USERS_DB, get_db, init_db, now_iso  # noqa: E402
 
 
 def _write_auth(telegram_id: int, uid: str) -> None:

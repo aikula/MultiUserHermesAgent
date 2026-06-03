@@ -1,8 +1,5 @@
 """Tests: Secret safety — P0-1 from spec 01."""
-import os
-from unittest.mock import patch
 
-import pytest
 
 
 class TestSecretsNotInPrompt:

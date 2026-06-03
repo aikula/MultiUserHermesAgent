@@ -9,8 +9,6 @@ import imaplib
 import smtplib
 import ssl
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.utils import parsedate_to_datetime
 
 from .db import get_db
 from ..secrets_store import decrypt

@@ -1,5 +1,4 @@
 """Tests: Hard quota — P0-3 from spec 01."""
-import pytest
 
 
 class TestHardQuota:

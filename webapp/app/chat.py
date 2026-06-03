@@ -1,6 +1,5 @@
 """Chat: per-user context, Hermes API calls, history."""
 import os
-from pathlib import Path
 
 import httpx
 
@@ -46,7 +45,7 @@ def build_system_prompt(uid: str) -> str:
     user_dir = HERMES_USERS_DIR / uid
     soul = (user_dir / "SOUL.md").read_text(encoding="utf-8") if (user_dir / "SOUL.md").exists() else ""
     memory = (user_dir / "memory.md").read_text(encoding="utf-8").strip() if (user_dir / "memory.md").exists() else ""
-    parts = [soul.strip()] if soul.strip() else [f"# Ассистент\n\nПолезный помощник для пользователя."]
+    parts = [soul.strip()] if soul.strip() else ["# Ассистент\n\nПолезный помощник для пользователя."]
     if memory:
         parts.append("\n## Твоя память о юзере\n\n" + memory)
 

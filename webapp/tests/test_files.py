@@ -1,10 +1,8 @@
 """Tests: File upload — P0-5 from spec 01."""
 import os
 import sys
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 
 class TestFileUpload:

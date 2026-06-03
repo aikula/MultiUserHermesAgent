@@ -6,7 +6,6 @@ the application secret + user identity, without storing the key.
 """
 import hashlib
 import os
-import secrets as _secrets
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
