@@ -16,6 +16,7 @@ from .db import QUOTAS_DIR, get_db, now_iso
 WELCOME_QUOTA = int(os.environ.get("WELCOME_QUOTA", "2000000"))
 ALERT_THRESHOLD_PCT = int(os.environ.get("ALERT_THRESHOLD_PCT", "80"))
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_ADMIN_BOT_TOKEN = os.environ.get("TELEGRAM_ADMIN_BOT_TOKEN", "").strip() or TELEGRAM_BOT_TOKEN
 TELEGRAM_ADMIN_CHAT_ID = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
 
 
@@ -114,12 +115,12 @@ def _maybe_alert(uid: str, remaining: int) -> None:
         f"({used:,} / {WELCOME_QUOTA:,} токенов)"
     )
     logging.warning(msg)
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID:
+    if TELEGRAM_ADMIN_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID:
         try:
             import httpx
             with httpx.Client(timeout=10) as c:
                 c.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    f"https://api.telegram.org/bot{TELEGRAM_ADMIN_BOT_TOKEN}/sendMessage",
                     json={"chat_id": TELEGRAM_ADMIN_CHAT_ID, "text": msg},
                 )
         except Exception:

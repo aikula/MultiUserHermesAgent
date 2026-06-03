@@ -2,11 +2,11 @@
 {% block title %}Профиль — {{ user.login }}{% endblock %}
 {% block content %}
 <h1>Профиль</h1>
+
 <div class="card">
   <dl class="kv">
     <dt>UID</dt>           <dd><code>{{ user.uid }}</code></dd>
     <dt>Логин</dt>         <dd><code>@{{ user.login }}</code></dd>
-    <dt>Имя</dt>           <dd>{{ user.name or "—" }}</dd>
     <dt>Telegram</dt>      <dd>
       {% if user.telegram_id %}
         ✅ привязан (<code>{{ user.telegram_id }}</code>)
@@ -29,6 +29,26 @@
   </dl>
 </div>
 
+<h2>Настройки</h2>
+<form class="card" id="settings-form">
+  <label>Имя
+    <input type="text" name="name" value="{{ user.name or '' }}">
+  </label>
+  <hr>
+  <label>Новый пароль <span class="muted">(оставь пустым, если не меняешь)</span>
+    <input type="password" name="new_password" autocomplete="new-password">
+  </label>
+  <label>Текущий пароль <span class="muted">(нужен для смены пароля)</span>
+    <input type="password" name="current_password" autocomplete="current-password">
+  </label>
+  <hr>
+  <label>SOUL.md <span class="muted">(персона ассистента)</span>
+    <textarea name="soul_md" rows="10" class="soul-edit">{{ soul }}</textarea>
+  </label>
+  <button type="submit">Сохранить</button>
+  <span class="muted" id="settings-msg"></span>
+</form>
+
 <h2>Telegram</h2>
 <div class="card">
   {% if user.telegram_id %}
@@ -49,17 +69,137 @@
   {% endif %}
 </div>
 
-<h2>SOUL.md <span class="muted">(персона ассистента)</span></h2>
-<pre class="soul">{{ soul }}</pre>
-<p class="muted">Файл <code>users/{{ user.uid }}/SOUL.md</code> — можно править на хосте.</p>
+<h2>Почта (IMAP/SMTP)</h2>
+<form class="card" id="email-form">
+  <label>IMAP хост <span class="muted">(imap.gmail.com, imap.yandex.ru, ...)</span>
+    <input type="text" name="imap_host" value="{{ user.email_imap_host or '' }}" placeholder="imap.gmail.com">
+  </label>
+  <label>IMAP порт
+    <input type="number" name="imap_port" value="{{ user.email_imap_port or 993 }}">
+  </label>
+  <label>SMTP хост <span class="muted">(smtp.gmail.com, smtp.yandex.ru, ...)</span>
+    <input type="text" name="smtp_host" value="{{ user.email_smtp_host or '' }}" placeholder="smtp.gmail.com">
+  </label>
+  <label>SMTP порт
+    <input type="number" name="smtp_port" value="{{ user.email_smtp_port or 587 }}">
+  </label>
+  <label>Логин <span class="muted">(email адрес)</span>
+    <input type="text" name="email_login" value="{{ user.email_login or '' }}" placeholder="user@gmail.com">
+  </label>
+  <label>Пароль <span class="muted">(App Password для Gmail)</span>
+    <input type="password" name="email_password" value="{{ user.email_password or '' }}" autocomplete="new-password">
+  </label>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button type="submit">Сохранить</button>
+    {% if user.email_login %}
+      <button type="button" id="email-clear" class="secondary">Отключить</button>
+    {% endif %}
+    <span class="muted" id="email-msg"></span>
+  </div>
+</form>
+
+<h2>Google Workspace</h2>
+<div class="card">
+  <p id="google-status">
+    {% if user.google_connected %}
+      ✅ Google подключён
+    {% else %}
+      <span class="muted">не подключён</span>
+    {% endif %}
+  </p>
+  {% if not user.google_connected %}
+    <p class="muted">Для подключения нужен OAuth токен. Запроси инструкцию у ассистента.</p>
+  {% else %}
+    <button type="button" id="google-disconnect" class="secondary">Отключить Google</button>
+  {% endif %}
+</div>
 
 <script>
 const PREFIX = window.location.pathname.startsWith("/chat/") ? "/chat" : "";
+
 document.getElementById("tg-new")?.addEventListener("click", async () => {
   const r = await fetch(PREFIX + "/api/profile/generate-link", { method: "POST" });
   if (!r.ok) { alert("Ошибка: " + r.status); return; }
   const data = await r.json();
   location.reload();
+});
+
+document.getElementById("settings-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button[type=submit]");
+  const msg = document.getElementById("settings-msg");
+  btn.disabled = true;
+  msg.textContent = "сохраняю…";
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd.entries());
+  Object.keys(body).forEach(k => { if (!body[k]) delete body[k]; });
+  try {
+    const r = await fetch(PREFIX + "/api/profile/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      msg.textContent = "❌ " + (data.detail || r.statusText);
+    } else {
+      msg.textContent = "✅ сохранено: " + data.changed;
+      document.querySelector("input[name=current_password]").value = "";
+      document.querySelector("input[name=new_password]").value = "";
+    }
+  } catch (e) {
+    msg.textContent = "❌ " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("email-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button[type=submit]");
+  const msg = document.getElementById("email-msg");
+  btn.disabled = true;
+  msg.textContent = "сохраняю…";
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd.entries());
+  Object.keys(body).forEach(k => { if (!body[k]) delete body[k]; });
+  try {
+    const r = await fetch(PREFIX + "/api/profile/email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      msg.textContent = "❌ " + (data.detail || r.statusText);
+    } else {
+      msg.textContent = "✅ почта сохранена";
+    }
+  } catch (e) {
+    msg.textContent = "❌ " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("email-clear")?.addEventListener("click", async () => {
+  if (!confirm("Отключить почту?")) return;
+  const msg = document.getElementById("email-msg");
+  try {
+    const r = await fetch(PREFIX + "/api/profile/email/clear", { method: "POST" });
+    if (r.ok) location.reload();
+    else msg.textContent = "❌ ошибка";
+  } catch (e) {
+    msg.textContent = "❌ " + e.message;
+  }
+});
+
+document.getElementById("google-disconnect")?.addEventListener("click", async () => {
+  if (!confirm("Отключить Google?")) return;
+  try {
+    const r = await fetch(PREFIX + "/api/profile/google/disconnect", { method: "POST" });
+    if (r.ok) location.reload();
+  } catch (e) {}
 });
 </script>
 {% endblock %}

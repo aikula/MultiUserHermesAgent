@@ -1,15 +1,17 @@
-"""Telegram relay: long-poll, /start, chat."""
+"""Telegram relay: long-poll, /start, chat, file handling."""
 import asyncio
 import json
 import logging
 import os
+import secrets
 import string
+import time
 from pathlib import Path
 
 import httpx
 
 from .chat import build_system_prompt, get_history, save_message
-from .db import HERMES_SHARED_DIR, get_db, now_iso
+from .db import HERMES_USERS_DIR, HERMES_SHARED_DIR, get_db, now_iso
 from .quota import record as quota_record
 from .summarizer import maybe_summarize
 
@@ -22,6 +24,21 @@ HERMES_API_KEY = os.environ["HERMES_API_KEY"]
 HERMES_MODEL = os.environ.get("HERMES_MODEL", "hermes-agent")
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "20"))
 MAX_TG_MSG = 4000  # Telegram message limit is 4096
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB max file size
+
+# Allowed file extensions
+ALLOWED_EXTENSIONS = {
+    # Documents
+    '.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.toml',
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.html', '.htm', '.css', '.js', '.py', '.java', '.c', '.cpp', '.h',
+    '.sql', '.sh', '.bat', '.ps1',
+    # Data
+    '.zip', '.tar', '.gz', '.bz2', '.7z', '.rar',
+    '.log', '.conf', '.cfg', '.ini',
+    # Images (will be saved but agent can't process them directly)
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg',
+}
 
 
 def _gen_code(n: int = 6) -> str:
@@ -54,6 +71,35 @@ def _set_link(telegram_id: int, uid: str) -> None:
     _save_auth(auth)
 
 
+def _get_user_files_dir(uid: str) -> Path:
+    """Get or create user files directory."""
+    files_dir = HERMES_USERS_DIR / uid / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    return files_dir
+
+
+def _safe_filename(filename: str, files_dir: Path) -> str:
+    """Generate safe filename, avoiding conflicts."""
+    # Remove path components
+    name = Path(filename).name
+    if not name or name.startswith('.'):
+        name = f"file_{int(time.time())}"
+
+    # Check extension
+    ext = Path(name).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        name = name + ".txt"
+
+    # Avoid conflicts by adding timestamp
+    target = files_dir / name
+    if target.exists():
+        stem = Path(name).stem
+        ext = Path(name).suffix
+        name = f"{stem}_{int(time.time())}{ext}"
+
+    return name
+
+
 class TelegramRelay:
     def __init__(self):
         if not TELEGRAM_BOT_TOKEN:
@@ -79,7 +125,10 @@ class TelegramRelay:
         chunks = [text[i:i + MAX_TG_MSG] for i in range(0, len(text), MAX_TG_MSG)]
         for chunk in chunks:
             try:
-                await self._tg("sendMessage", chat_id=chat_id, text=chunk, parse_mode=parse_mode)
+                params = {"chat_id": chat_id, "text": chunk}
+                if parse_mode:
+                    params["parse_mode"] = parse_mode
+                await self._tg("sendMessage", **params)
             except RuntimeError as e:
                 if parse_mode and "parse_mode" in str(e):
                     await self._tg("sendMessage", chat_id=chat_id, text=chunk)
@@ -91,6 +140,43 @@ class TelegramRelay:
         self.bot_username = me.get("username")
         log.info(f"bot @{self.bot_username} ready")
         return me
+
+    async def download_file(self, file_id: str, original_name: str, uid: str) -> tuple[bool, str, str | None]:
+        """Download file from Telegram and save to user's folder.
+        Returns (ok, message, saved_filename).
+        """
+        try:
+            # Get file info from Telegram
+            file_info = await self._tg("getFile", file_id=file_id)
+            file_path = file_info.get("file_path")
+            file_size = file_info.get("file_size", 0)
+
+            if not file_path:
+                return False, "Не удалось получить информацию о файле", None
+
+            if file_size > MAX_FILE_SIZE:
+                return False, f"Файл слишком большой ({file_size // 1024 // 1024}MB). Максимум: {MAX_FILE_SIZE // 1024 // 1024}MB", None
+
+            # Download file
+            url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+            r = await self._client.get(url)
+            r.raise_for_status()
+
+            # Save to user's folder
+            files_dir = _get_user_files_dir(uid)
+            safe_name = _safe_filename(original_name, files_dir)
+            target = files_dir / safe_name
+            target.write_bytes(r.content)
+
+            log.info(f"File saved: {target} ({file_size} bytes)")
+            return True, f"Файл сохранён: {safe_name}", safe_name
+
+        except httpx.HTTPError as e:
+            log.exception(f"download_file error: {e}")
+            return False, f"Ошибка скачивания: {e}", None
+        except Exception as e:
+            log.exception(f"download_file error: {e}")
+            return False, f"Ошибка сохранения: {e}", None
 
     async def consume_link_code(self, code: str, telegram_id: int) -> tuple[bool, str, str | None]:
         """Привязать существующий web-юзер через link-code. Возвращает (ok, message, uid)."""
@@ -141,7 +227,11 @@ class TelegramRelay:
                 r = await client.post(
                     f"{HERMES_API_URL}/v1/chat/completions",
                     json={"model": HERMES_MODEL, "messages": messages, "max_tokens": 1024, "stream": False},
-                    headers={"Authorization": f"Bearer {HERMES_API_KEY}", "Content-Type": "application/json"},
+                    headers={
+                        "Authorization": f"Bearer {HERMES_API_KEY}",
+                        "Content-Type": "application/json",
+                        "X-Hermes-Session-Key": uid,
+                    },
                 )
                 r.raise_for_status()
                 data = r.json()
@@ -151,6 +241,12 @@ class TelegramRelay:
             quota_record(uid, "telegram", total)
             await self.send(chat_id, content)
             asyncio.create_task(maybe_summarize(uid))
+        except httpx.ConnectError:
+            log.exception("process_chat_message: gateway connection error")
+            await self.send(chat_id, "⚠️ Сервис временно недоступен. Попробуй позже.")
+        except httpx.TimeoutException:
+            log.exception("process_chat_message: gateway timeout")
+            await self.send(chat_id, "⚠️ Превышено время ожидания. Попробуй позже.")
         except Exception as e:
             log.exception("process_chat_message error")
             await self.send(chat_id, f"⚠️ Ошибка: {e}")
@@ -159,60 +255,125 @@ class TelegramRelay:
         message = update.get("message") or update.get("edited_message")
         if not message:
             return
-        text = (message.get("text") or "").strip()
+
         chat_id = message["chat"]["id"]
         from_user = message.get("from") or message.get("chat") or {}
         tg_id = from_user.get("id")
-        if not tg_id or not text:
+        text = (message.get("text") or "").strip()
+
+        if not tg_id:
             return
 
-        if text == "/start" or text.startswith("/start "):
+        # Handle /start command
+        if text and (text == "/start" or text.startswith("/start ")):
             code = text.split(maxsplit=1)[1].strip() if " " in text else ""
             if not code:
-                deep = f"https://{self.bot_username}.t.me" if self.bot_username else "https://t.me"
                 await self.send(
                     chat_id,
-                    "Привет! Чтобы зарегистрироваться:\n"
-                    "1. Зайди на https://hermes.kulinich.ru/chat/ и получи invite-code\n"
-                    "2. Вернись сюда и отправь: <code>/start INVITE-CODE</code>",
+                    "👋 Привет! Чтобы начать:\n\n"
+                    "1. Зайди на https://hermes.kulinich.ru/chat/\n"
+                    "2. Зарегистрируйся или войди\n"
+                    "3. Открой Профиль → Telegram → Получи код\n"
+                    "4. Вернись сюда и отправь: <code>/start ТВОЙ-КОД</code>",
                     parse_mode="HTML",
                 )
                 return
             # Try link-code first (existing user)
             ok, info, uid = await self.consume_link_code(code, tg_id)
             if ok:
-                await self.send(chat_id, f"✅ Аккаунт привязан. Можешь общаться прямо здесь.")
+                await self.send(chat_id, "✅ Аккаунт привязан! Можешь общаться прямо здесь.\n\nОтправь любое сообщение, чтобы начать.")
                 return
-            if info not in ("not_link", "expired"):
-                await self.send(chat_id, f"❌ {info}")
-                return
-            # Then try invite-code (new user)
-            ok, info, uid = await self.redeem_invite(code, tg_id)
-            if ok:
+            if info == "expired":
                 await self.send(
                     chat_id,
-                    f"✅ Регистрация успешна!\n"
-                    f"Твой логин: <code>tg_{tg_id}</code>\n"
-                    f"Зайди на https://hermes.kulinich.ru/chat/profile чтобы задать пароль.",
+                    "⏰ Код истёк. Получи новый код:\n"
+                    "1. Зайди на https://hermes.kulinich.ru/chat/profile\n"
+                    "2. Нажми «Привязать Telegram»\n"
+                    "3. Отправь новый код здесь: <code>/start НОВЫЙ-КОД</code>",
                     parse_mode="HTML",
                 )
                 return
-            if info == "not_invite":
-                await self.send(chat_id, "❌ Код не распознан (ни link-code, ни invite-code).")
-            else:
-                await self.send(chat_id, f"❌ {info}")
+            if info == "not_link":
+                # Try invite-code (new user)
+                ok, info, uid = await self.redeem_invite(code, tg_id)
+                if ok:
+                    await self.send(
+                        chat_id,
+                        f"✅ Регистрация успешна!\n\n"
+                        f"Твой логин: <code>tg_{tg_id}</code>\n\n"
+                        f"Зайди на https://hermes.kulinich.ru/chat/profile чтобы задать пароль и имя.",
+                        parse_mode="HTML",
+                    )
+                    return
+                if info == "not_invite":
+                    await self.send(
+                        chat_id,
+                        "❌ Код не распознан.\n\n"
+                        "Проверь код и попробуй снова:\n"
+                        "<code>/start ТВОЙ-КОД</code>\n\n"
+                        "Или получи новый код на https://hermes.kulinich.ru/chat/profile",
+                        parse_mode="HTML",
+                    )
+                elif info == "telegram_already_linked":
+                    await self.send(
+                        chat_id,
+                        "⚠️ Этот Telegram аккаунт уже привязан к другому пользователю.\n\n"
+                        "Если это ты — зайди на https://hermes.kulinich.ru/chat/profile\n"
+                        "Или отправь /unlink чтобы отвязать.",
+                    )
+                else:
+                    await self.send(chat_id, f"❌ {info}")
+                return
+            # Some other error
+            await self.send(chat_id, f"❌ {info}")
             return
 
+        # Handle /help command
         if text == "/help":
-            await self.send(chat_id, "/start CODE — привязать/зарегистрироваться\n/whoami — твой UID\n/unlink — отвязать")
+            await self.send(
+                chat_id,
+                "📖 Доступные команды:\n\n"
+                "/start CODE — привязать или зарегистрироваться\n"
+                "/whoami — твой UID\n"
+                "/files — список файлов\n"
+                "/unlink — отвязать аккаунт\n"
+                "/help — эта справка\n\n"
+                "Также ты можешь отправлять мне файлы (документы, текст, CSV, PDF) —\n"
+                "они сохранятся и я смогу с ними работать.",
+            )
             return
 
+        # Handle /whoami command
         if text == "/whoami":
             auth = _load_auth()
             uid = auth.get(str(tg_id))
-            await self.send(chat_id, f"UID: <code>{uid or '—'}</code>", parse_mode="HTML")
+            if uid:
+                await self.send(chat_id, f"🆔 Твой UID: <code>{uid}</code>", parse_mode="HTML")
+            else:
+                await self.send(chat_id, "❌ Ты не привязан. Отправь /start КОД")
             return
 
+        # Handle /files command
+        if text == "/files":
+            auth = _load_auth()
+            uid = auth.get(str(tg_id))
+            if not uid:
+                await self.send(chat_id, "❌ Ты не привязан. Отправь /start КОД")
+                return
+            files_dir = HERMES_USERS_DIR / uid / "files"
+            if not files_dir.exists():
+                await self.send(chat_id, "📁 У тебя нет файлов.")
+                return
+            files = list(files_dir.iterdir())
+            files = [f for f in files if f.is_file()]
+            if not files:
+                await self.send(chat_id, "📁 У тебя нет файлов.")
+                return
+            file_list = "\n".join(f"• {f.name} ({f.stat().st_size // 1024}KB)" for f in sorted(files))
+            await self.send(chat_id, f"📁 Твои файлы:\n{file_list}")
+            return
+
+        # Handle /unlink command
         if text == "/unlink":
             auth = _load_auth()
             if str(tg_id) in auth:
@@ -221,20 +382,104 @@ class TelegramRelay:
             from .db import get_db
             db = get_db()
             db.execute("UPDATE users SET telegram_id=NULL WHERE telegram_id=?", (tg_id,))
-            await self.send(chat_id, "Отвязано.")
+            await self.send(chat_id, "🔓 Аккаунт отвязан. Ты можешь привязать другой аккаунт через /start КОД")
             return
 
-        # Regular message: look up user
-        auth = _load_auth()
-        uid = auth.get(str(tg_id))
-        if not uid:
-            await self.send(
-                chat_id,
-                "Ты не зарегистрирован. Зайди на https://hermes.kulinich.ru/chat/ → /profile,\n"
-                "получи invite-code, потом /start <code>",
-            )
+        # Handle file (document)
+        document = message.get("document")
+        if document:
+            auth = _load_auth()
+            uid = auth.get(str(tg_id))
+            if not uid:
+                await self.send(
+                    chat_id,
+                    "❌ Ты не зарегистрирован.\n\n"
+                    "Зайди на https://hermes.kulinich.ru/chat/ → Профиль,\n"
+                    "получи invite-code, потом /start <code>INVITE-CODE</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            file_id = document.get("file_id")
+            file_name = document.get("file_name") or f"file_{int(time.time())}"
+            file_size = document.get("file_size", 0)
+
+            if file_size > MAX_FILE_SIZE:
+                await self.send(chat_id, f"❌ Файл слишком большой ({file_size // 1024 // 1024}MB). Максимум: {MAX_FILE_SIZE // 1024 // 1024}MB")
+                return
+
+            await self.send(chat_id, f"📥 Скачиваю {file_name}...")
+            ok, msg, saved_name = await self.download_file(file_id, file_name, uid)
+            if ok:
+                await self.send(
+                    chat_id,
+                    f"✅ {msg}\n\n"
+                    f"Теперь я могу работать с этим файлом. Просто напиши, что с ним сделать.",
+                )
+            else:
+                await self.send(chat_id, f"❌ {msg}")
             return
-        await self.process_chat_message(uid, chat_id, text)
+
+        # Handle photo
+        photo = message.get("photo")
+        if photo:
+            auth = _load_auth()
+            uid = auth.get(str(tg_id))
+            if not uid:
+                await self.send(
+                    chat_id,
+                    "❌ Ты не зарегистрирован.\n\n"
+                    "Зайди на https://hermes.kulinich.ru/chat/ → Профиль,\n"
+                    "получи invite-code, потом /start <code>INVITE-CODE</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            # Get largest photo
+            largest = max(photo, key=lambda p: p.get("file_size", 0))
+            file_id = largest.get("file_id")
+            file_size = largest.get("file_size", 0)
+
+            if file_size > MAX_FILE_SIZE:
+                await self.send(chat_id, f"❌ Фото слишком большое ({file_size // 1024 // 1024}MB). Максимум: {MAX_FILE_SIZE // 1024 // 1024}MB")
+                return
+
+            filename = f"photo_{int(time.time())}.jpg"
+            await self.send(chat_id, "📥 Скачиваю фото...")
+            ok, msg, saved_name = await self.download_file(file_id, filename, uid)
+            if ok:
+                await self.send(
+                    chat_id,
+                    f"✅ {msg}\n\n"
+                    f"Теперь я могу работать с этим фото. Просто напиши, что с ним сделать.",
+                )
+            else:
+                await self.send(chat_id, f"❌ {msg}")
+            return
+
+        # Handle text message
+        if text:
+            auth = _load_auth()
+            uid = auth.get(str(tg_id))
+            if not uid:
+                await self.send(
+                    chat_id,
+                    "❌ Ты не зарегистрирован.\n\n"
+                    "Зайди на https://hermes.kulinich.ru/chat/ → Профиль,\n"
+                    "получи invite-code, потом /start <code>INVITE-CODE</code>",
+                    parse_mode="HTML",
+                )
+                return
+            await self.process_chat_message(uid, chat_id, text)
+            return
+
+        # Unknown message type
+        await self.send(
+            chat_id,
+            "🤔 Я не понимаю этот тип сообщения.\n\n"
+            "Отправь мне текст или файл, или используй команды:\n"
+            "/help — справка по командам",
+        )
 
     async def run(self):
         await self.get_me()
@@ -243,7 +488,7 @@ class TelegramRelay:
             try:
                 r = await self._client.get(
                     f"{self.api_base}/getUpdates",
-                    params={"timeout": 30, "offset": self.offset, "allowed_updates": '["message"]'},
+                    params={"timeout": 1, "offset": self.offset, "allowed_updates": '["message"]'},
                 )
                 r.raise_for_status()
                 data = r.json()

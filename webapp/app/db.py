@@ -35,6 +35,13 @@ CREATE TABLE IF NOT EXISTS users (
     quota_used INTEGER DEFAULT 0,
     last_alert_pct INTEGER DEFAULT 0,
     last_summarized_id INTEGER DEFAULT 0,
+    email_imap_host TEXT,
+    email_imap_port INTEGER DEFAULT 993,
+    email_smtp_host TEXT,
+    email_smtp_port INTEGER DEFAULT 587,
+    email_login TEXT,
+    email_password TEXT,
+    google_connected INTEGER DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS invite_codes (
@@ -77,3 +84,17 @@ def init_db() -> None:
         conn.execute("ALTER TABLE users ADD COLUMN quota_used INTEGER DEFAULT 0")
     if "last_alert_pct" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN last_alert_pct INTEGER DEFAULT 0")
+    if "email_imap_host" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_imap_host TEXT")
+    if "email_imap_port" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_imap_port INTEGER DEFAULT 993")
+    if "email_smtp_host" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_smtp_host TEXT")
+    if "email_smtp_port" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_smtp_port INTEGER DEFAULT 587")
+    if "email_login" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_login TEXT")
+    if "email_password" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_password TEXT")
+    if "google_connected" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN google_connected INTEGER DEFAULT 0")

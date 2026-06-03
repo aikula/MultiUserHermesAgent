@@ -79,6 +79,14 @@ pre.soul {
 }
 code { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px; }
 
+textarea.soul-edit {
+  width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--pre-bg); color: var(--fg); font: 13px/1.5 ui-monospace, "SF Mono", Consolas, monospace;
+  resize: vertical;
+}
+textarea.soul-edit:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.card hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+
 /* ---- Chat ---- */
 .chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 120px); min-height: 400px; }
 .chat-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--border); }

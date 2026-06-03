@@ -196,7 +196,7 @@ def login_submit(request: Request, login: str = Form(...), password: str = Form(
     db = get_db()
     row = db.execute("SELECT uid, password_hash FROM users WHERE login=?", (login,)).fetchone()
     if not row or not verify_password(password, row["password_hash"]):
-        return _render(request, "login.html", error="Неверный логин или пароль", login=login, status_code=401)
+        return _render(request, "login.html", error="Неверный логин или пароль", login=login, status_code=200)
     resp = RedirectResponse("/profile", status_code=303)
     resp.set_cookie("session", make_token(row["uid"]), httponly=True, samesite="lax", max_age=JWT_TTL_HOURS * 3600)
     return resp
@@ -214,7 +214,12 @@ def profile(request: Request, user: str | None = Depends(current_user)):
     if not user:
         return RedirectResponse("/login", status_code=302)
     db = get_db()
-    u = db.execute("SELECT login, name, telegram_id, quota_remaining FROM users WHERE uid=?", (user,)).fetchone()
+    u = db.execute(
+        "SELECT login, name, telegram_id, quota_remaining, "
+        "email_imap_host, email_imap_port, email_smtp_host, email_smtp_port, "
+        "email_login, email_password, google_connected FROM users WHERE uid=?",
+        (user,),
+    ).fetchone()
     if not u:
         return RedirectResponse("/logout", status_code=302)
     soul_path = HERMES_USERS_DIR / user / "SOUL.md"
@@ -232,6 +237,92 @@ def profile(request: Request, user: str | None = Depends(current_user)):
                    link_code=link_code, link_expires=link_expires,
                    bot_username=os.environ.get("TELEGRAM_BOT_USERNAME", ""),
                    usage=quota.get_usage(user))
+
+
+@app.post("/api/profile/update")
+async def api_profile_update(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    current_password = (body.get("current_password") or "").strip()
+    new_password = (body.get("new_password") or "").strip()
+    soul_md = body.get("soul_md")
+
+    db = get_db()
+    row = db.execute("SELECT password_hash FROM users WHERE uid=?", (user,)).fetchone()
+
+    if new_password:
+        if not current_password:
+            raise HTTPException(400, "current_password required to change password")
+        if len(new_password) < 6:
+            raise HTTPException(400, "new password too short (min 6 chars)")
+        if not verify_password(current_password, row["password_hash"]):
+            raise HTTPException(403, "current password is wrong")
+        db.execute("UPDATE users SET password_hash=? WHERE uid=?", (hash_password(new_password), user))
+        changed = "password"
+    else:
+        changed = ""
+
+    if name:
+        db.execute("UPDATE users SET name=? WHERE uid=?", (name, user))
+        changed = (changed + ", " if changed else "") + "name"
+
+    if soul_md is not None:
+        soul_path = HERMES_USERS_DIR / user / "SOUL.md"
+        soul_path.write_text(soul_md)
+        changed = (changed + ", " if changed else "") + "SOUL.md"
+
+    if not changed:
+        raise HTTPException(400, "nothing to update")
+
+    return JSONResponse({"ok": True, "changed": changed})
+
+
+@app.post("/api/profile/email")
+async def api_profile_email(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    imap_host = (body.get("imap_host") or "").strip()
+    imap_port = body.get("imap_port") or 993
+    smtp_host = (body.get("smtp_host") or "").strip()
+    smtp_port = body.get("smtp_port") or 587
+    email_login = (body.get("email_login") or "").strip()
+    email_password = (body.get("email_password") or "").strip()
+
+    if not all([imap_host, smtp_host, email_login, email_password]):
+        raise HTTPException(400, "all fields required")
+
+    db = get_db()
+    db.execute(
+        "UPDATE users SET email_imap_host=?, email_imap_port=?, email_smtp_host=?, "
+        "email_smtp_port=?, email_login=?, email_password=? WHERE uid=?",
+        (imap_host, int(imap_port), smtp_host, int(smtp_port), email_login, email_password, user),
+    )
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/profile/email/clear")
+async def api_profile_email_clear(user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    db = get_db()
+    db.execute(
+        "UPDATE users SET email_imap_host=NULL, email_imap_port=993, email_smtp_host=NULL, "
+        "email_smtp_port=587, email_login=NULL, email_password=NULL WHERE uid=?",
+        (user,),
+    )
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/profile/google/status")
+def api_google_status(user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    token_path = HERMES_USERS_DIR / user / "google_token.json"
+    connected = token_path.exists()
+    return JSONResponse({"connected": connected})
 
 
 @app.post("/api/profile/generate-link")
@@ -347,7 +438,7 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
         messages.append({"role": h["role"], "content": h["content"]})
 
     try:
-        result = await chat.call_hermes(messages)
+        result = await chat.call_hermes(messages, uid=user)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"Hermes API error: {e}") from e
 
