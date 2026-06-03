@@ -21,10 +21,11 @@ _ENC_PREFIX = "enc:v1:"
 def _derive_key(uid: str) -> bytes:
     """Derive a Fernet key from app secret + user UID."""
     if not _APP_SECRET:
-        # Fallback: use a deterministic key (less secure but functional)
-        key_material = f"hermes-secrets-{uid}".encode()
-    else:
-        key_material = _APP_SECRET.encode() + uid.encode()
+        raise RuntimeError(
+            "Encryption key not configured. "
+            "Set WEBAPP_INTERNAL_SECRET or JWT_SECRET environment variable."
+        )
+    key_material = _APP_SECRET.encode() + uid.encode()
 
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
@@ -63,6 +64,11 @@ def decrypt(ciphertext: str, uid: str) -> str:
         return f.decrypt(token.encode("ascii")).decode("utf-8")
     except (InvalidToken, Exception):
         return ciphertext
+
+
+def is_encryption_available() -> bool:
+    """Check if encryption key is configured."""
+    return bool(_APP_SECRET)
 
 
 def is_encrypted(value: str) -> bool:

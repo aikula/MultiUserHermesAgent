@@ -87,7 +87,7 @@
     <input type="text" name="email_login" value="{{ user.email_login or '' }}" placeholder="user@gmail.com">
   </label>
   <label>Пароль <span class="muted">(App Password для Gmail)</span>
-    <input type="password" name="email_password" value="{{ user.email_password or '' }}" autocomplete="new-password">
+    <input type="password" name="email_password" value="" autocomplete="new-password" placeholder="{% if user.email_password %}•••••••• (сохранён){% endif %}">
   </label>
   <div style="display:flex;gap:8px;align-items:center">
     <button type="submit">Сохранить</button>
@@ -116,9 +116,13 @@
 
 <script>
 const PREFIX = window.location.pathname.startsWith("/chat/") ? "/chat" : "";
+const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || "";
 
 document.getElementById("tg-new")?.addEventListener("click", async () => {
-  const r = await fetch(PREFIX + "/api/profile/generate-link", { method: "POST" });
+  const r = await fetch(PREFIX + "/api/profile/generate-link", {
+    method: "POST",
+    headers: { "X-CSRF-Token": CSRF },
+  });
   if (!r.ok) { alert("Ошибка: " + r.status); return; }
   const data = await r.json();
   location.reload();
@@ -136,7 +140,7 @@ document.getElementById("settings-form")?.addEventListener("submit", async (e) =
   try {
     const r = await fetch(PREFIX + "/api/profile/update", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
       body: JSON.stringify(body),
     });
     const data = await r.json();
@@ -166,7 +170,7 @@ document.getElementById("email-form")?.addEventListener("submit", async (e) => {
   try {
     const r = await fetch(PREFIX + "/api/profile/email", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
       body: JSON.stringify(body),
     });
     const data = await r.json();
@@ -186,7 +190,10 @@ document.getElementById("email-clear")?.addEventListener("click", async () => {
   if (!confirm("Отключить почту?")) return;
   const msg = document.getElementById("email-msg");
   try {
-    const r = await fetch(PREFIX + "/api/profile/email/clear", { method: "POST" });
+    const r = await fetch(PREFIX + "/api/profile/email/clear", {
+      method: "POST",
+      headers: { "X-CSRF-Token": CSRF },
+    });
     if (r.ok) location.reload();
     else msg.textContent = "❌ ошибка";
   } catch (e) {
@@ -197,7 +204,10 @@ document.getElementById("email-clear")?.addEventListener("click", async () => {
 document.getElementById("google-disconnect")?.addEventListener("click", async () => {
   if (!confirm("Отключить Google?")) return;
   try {
-    const r = await fetch(PREFIX + "/api/profile/google/disconnect", { method: "POST" });
+    const r = await fetch(PREFIX + "/api/profile/google/disconnect", {
+      method: "POST",
+      headers: { "X-CSRF-Token": CSRF },
+    });
     if (r.ok) location.reload();
   } catch (e) {}
 });

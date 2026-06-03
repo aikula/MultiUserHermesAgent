@@ -13,7 +13,7 @@ import httpx
 
 from .chat import build_system_prompt, get_history, save_message
 from .db import HERMES_USERS_DIR, HERMES_SHARED_DIR
-from .quota import record as quota_record
+from .quota import check_quota, record as quota_record
 
 # Action types that require approval before execution
 REVIEW_ACTIONS = {"email_send", "calendar_create", "calendar_update", "telegram_send_external", "file_share_external"}
@@ -44,22 +44,24 @@ MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "20"))
 MAX_TG_MSG = 4000  # Telegram message limit is 4096
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB max file size
 
-# Allowed file extensions
+# Allowed file extensions (safe documents + images only)
 ALLOWED_EXTENSIONS = {
     # Documents
     '.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.toml',
     '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    '.html', '.htm', '.css', '.js', '.py', '.java', '.c', '.cpp', '.h',
-    '.sql', '.sh', '.bat', '.ps1',
-    # Data
-    '.zip', '.tar', '.gz', '.bz2', '.7z', '.rar',
     '.log', '.conf', '.cfg', '.ini',
-    # Images (will be saved but agent can't process them directly)
+    # Images
     '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg',
 }
 
-# Dangerous extensions that should NEVER be saved (even renamed)
-DANGEROUS_EXTENSIONS = {'.exe', '.bat', '.cmd', '.com', '.msi', '.scr', '.pif', '.vbs', '.js', '.ws', '.wsh'}
+# Dangerous extensions that should NEVER be saved
+DANGEROUS_EXTENSIONS = {
+    '.exe', '.bat', '.cmd', '.com', '.msi', '.scr', '.pif',
+    '.vbs', '.js', '.ws', '.wsh',
+    '.sh', '.ps1', '.py',
+    '.html', '.htm', '.css',
+    '.zip', '.tar', '.gz', '.bz2', '.7z', '.rar',
+}
 
 
 def _gen_code(n: int = 6) -> str:
@@ -279,6 +281,14 @@ class TelegramRelay:
 
         # Normal chat flow
         save_message(uid, "telegram", "user", text, 0)
+
+        # Hard quota check — block before Hermes call
+        ok, err_msg = check_quota(uid)
+        if not ok:
+            save_message(uid, "telegram", "assistant", err_msg, 0)
+            await self.send(chat_id, f"⚠️ {err_msg}")
+            return
+
         history = get_history(uid)
         messages = [{"role": "system", "content": build_system_prompt(uid)}]
         for h in history:

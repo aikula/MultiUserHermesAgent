@@ -248,7 +248,7 @@ def register_submit(
     (user_dir / "memory.md").touch()
 
     resp = RedirectResponse("/profile", status_code=303)
-    resp.set_cookie("session", make_token(uid), httponly=True, samesite="lax", max_age=JWT_TTL_HOURS * 3600)
+    resp.set_cookie("session", make_token(uid), httponly=True, samesite="lax", secure=True, max_age=JWT_TTL_HOURS * 3600)
     return resp
 
 
@@ -317,6 +317,7 @@ def profile(request: Request, user: str | None = Depends(current_user)):
 async def api_profile_update(request: Request, user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
+    require_csrf(request)
     body = await request.json()
     name = (body.get("name") or "").strip()
     current_password = (body.get("current_password") or "").strip()
@@ -357,6 +358,7 @@ async def api_profile_update(request: Request, user: str | None = Depends(curren
 async def api_profile_email(request: Request, user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
+    require_csrf(request)
     body = await request.json()
     imap_host = (body.get("imap_host") or "").strip()
     imap_port = body.get("imap_port") or 993
@@ -381,9 +383,10 @@ async def api_profile_email(request: Request, user: str | None = Depends(current
 
 
 @app.post("/api/profile/email/clear")
-async def api_profile_email_clear(user: str | None = Depends(current_user)):
+async def api_profile_email_clear(request: Request, user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
+    require_csrf(request)
     db = get_db()
     db.execute(
         "UPDATE users SET email_imap_host=NULL, email_imap_port=993, email_smtp_host=NULL, "
@@ -403,9 +406,10 @@ def api_google_status(user: str | None = Depends(current_user)):
 
 
 @app.post("/api/profile/generate-link")
-def api_generate_link(user: str | None = Depends(current_user)):
+def api_generate_link(request: Request, user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
+    require_csrf(request)
     db = get_db()
     # expire old codes
     db.execute("DELETE FROM telegram_links WHERE uid=? AND (used_at IS NOT NULL OR expires_at < ?)", (user, now_iso()))

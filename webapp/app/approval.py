@@ -127,7 +127,7 @@ def approve_intent(intent_id: str) -> bool:
         return False
 
     db.execute(
-        "UPDATE action_intents SET status='approved', approved_at=? WHERE id=?",
+        "UPDATE action_intents SET status='approved', approved_at=? WHERE id=? AND status='pending_approval'",
         (now_iso(), intent_id),
     )
     db.commit()
