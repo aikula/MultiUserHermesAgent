@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import string
 import time
@@ -13,6 +14,23 @@ import httpx
 from .chat import build_system_prompt, get_history, save_message
 from .db import HERMES_USERS_DIR, HERMES_SHARED_DIR, get_db, now_iso
 from .quota import record as quota_record
+
+# Action types that require approval before execution
+REVIEW_ACTIONS = {"email_send", "calendar_create", "calendar_update", "telegram_send_external", "file_share_external"}
+
+
+def _extract_intent_from_response(content: str) -> dict | None:
+    """Extract action intent from agent response if it follows the format."""
+    match = re.search(r'```action_intent\n(.*?)\n```', content, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(1))
+        if "action_type" in data and "payload" in data:
+            return data
+    except json.JSONDecodeError:
+        pass
+    return None
 from .summarizer import maybe_summarize
 
 log = logging.getLogger("relay")
@@ -224,13 +242,42 @@ class TelegramRelay:
         return False, f"Ошибка: {r.status_code}", None
 
     async def process_chat_message(self, uid: str, chat_id: int, text: str):
-        # Hard quota check — block before Hermes call
-        from .quota import check_quota
-        ok, err_msg = check_quota(uid)
-        if not ok:
-            await self.send(chat_id, err_msg)
+        # Check for pending approval first
+        from .approval import get_pending_intent, is_confirmation, is_rejection, approve_intent, execute_intent, format_intent_payload
+        pending = get_pending_intent(uid)
+
+        if pending and is_confirmation(text):
+            # Approve and execute
+            if approve_intent(pending["id"]):
+                payload = json.loads(pending["payload_json"])
+                try:
+                    if pending["action_type"] == "email_send":
+                        from .tools.email_tools import send_email
+                        result = send_email(uid=uid, to=payload["to"], subject=payload["subject"], body=payload["body"])
+                        execute_intent(pending["id"], result_json=json.dumps(result))
+                        save_message(uid, "telegram", "assistant", f"✅ Письмо отправлено на {payload['to']}", 0)
+                        await self.send(chat_id, f"✅ Письмо отправлено на {payload['to']}")
+                        return
+                    else:
+                        execute_intent(pending["id"], error=f"Unknown action: {pending['action_type']}")
+                        await self.send(chat_id, "⚠️ Неизвестный тип действия.")
+                        return
+                except Exception as e:
+                    execute_intent(pending["id"], error=str(e))
+                    await self.send(chat_id, f"⚠️ Ошибка выполнения: {e}")
+                    return
+            else:
+                await self.send(chat_id, "⚠️ Заявка истекла или уже обработана.")
+                return
+
+        if pending and is_rejection(text):
+            from .approval import reject_intent
+            reject_intent(pending["id"])
+            save_message(uid, "telegram", "assistant", "❌ Действие отменено.", 0)
+            await self.send(chat_id, "❌ Действие отменено.")
             return
 
+        # Normal chat flow
         save_message(uid, "telegram", "user", text, 0)
         history = get_history(uid)
         messages = [{"role": "system", "content": build_system_prompt(uid)}]
@@ -253,7 +300,17 @@ class TelegramRelay:
             total = data.get("usage", {}).get("total_tokens", 0)
             save_message(uid, "telegram", "assistant", content, total)
             quota_record(uid, "telegram", total)
-            await self.send(chat_id, content)
+
+            # Check if response contains action intent
+            intent_data = _extract_intent_from_response(content)
+            if intent_data and intent_data["action_type"] in REVIEW_ACTIONS:
+                from .approval import create_intent
+                intent = create_intent(uid, intent_data["action_type"], intent_data["payload"])
+                display = format_intent_payload(intent)
+                await self.send(chat_id, f"{display}\n\n❓ Подтверди или отмень (ответь «подтверждаю» или «отмена»)")
+            else:
+                await self.send(chat_id, content)
+
             asyncio.create_task(maybe_summarize(uid))
         except httpx.ConnectError:
             log.exception("process_chat_message: gateway connection error")

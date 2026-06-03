@@ -478,6 +478,27 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
     chat.save_message(user, "web", "assistant", result["content"], result["total_tokens"])
     quota.record(user, "web", result["total_tokens"])
     asyncio.create_task(summarizer.maybe_summarize(user))
+
+    # Check if response contains an action intent that needs approval
+    from .approval import create_intent, REVIEW_ACTIONS
+    intent_data = _extract_intent_from_response(result["content"])
+    if intent_data and intent_data["action_type"] in REVIEW_ACTIONS:
+        intent = create_intent(user, intent_data["action_type"], intent_data["payload"])
+        return JSONResponse({
+            "content": result["content"],
+            "usage": {
+                "prompt_tokens": result["prompt_tokens"],
+                "completion_tokens": result["completion_tokens"],
+                "total_tokens": result["total_tokens"],
+            },
+            "finish_reason": result["finish_reason"],
+            "approval": {
+                "intent_id": intent["id"],
+                "action_type": intent["action_type"],
+                "payload": intent_data["payload"],
+            },
+        })
+
     return JSONResponse({
         "content": result["content"],
         "usage": {
@@ -486,4 +507,99 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
             "total_tokens": result["total_tokens"],
         },
         "finish_reason": result["finish_reason"],
+    })
+
+
+def _extract_intent_from_response(content: str) -> dict | None:
+    """Extract action intent from agent response if it follows the format."""
+    import re
+    import json
+
+    # Look for ACTION_INTENT block in response
+    match = re.search(r'```action_intent\n(.*?)\n```', content, re.DOTALL)
+    if not match:
+        return None
+
+    try:
+        data = json.loads(match.group(1))
+        if "action_type" in data and "payload" in data:
+            return data
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
+@app.post("/api/approve")
+async def api_approve(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    intent_id = body.get("intent_id")
+    if not intent_id:
+        raise HTTPException(400, "intent_id required")
+
+    from .approval import approve_intent, get_pending_intent, execute_intent
+    from .tools.email_tools import send_email
+
+    intent = get_pending_intent(user)
+    if not intent or intent["id"] != intent_id:
+        raise HTTPException(404, "pending intent not found or expired")
+
+    if not approve_intent(intent_id):
+        raise HTTPException(410, "intent expired or already processed")
+
+    # Execute the action
+    payload = json.loads(intent["payload_json"])
+    try:
+        if intent["action_type"] == "email_send":
+            result = send_email(
+                uid=user,
+                to=payload["to"],
+                subject=payload["subject"],
+                body=payload["body"],
+            )
+            execute_intent(intent_id, result_json=json.dumps(result))
+            chat.save_message(user, "web", "assistant",
+                              f"✅ Письмо отправлено на {payload['to']}", 0)
+            return JSONResponse({"ok": True, "result": result})
+        else:
+            execute_intent(intent_id, error=f"Unknown action type: {intent['action_type']}")
+            raise HTTPException(400, f"Unknown action type: {intent['action_type']}")
+    except Exception as e:
+        execute_intent(intent_id, error=str(e))
+        raise HTTPException(500, f"Execution failed: {e}") from e
+
+
+@app.post("/api/reject")
+async def api_reject(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    intent_id = body.get("intent_id")
+    if not intent_id:
+        raise HTTPException(400, "intent_id required")
+
+    from .approval import reject_intent
+    reject_intent(intent_id)
+    chat.save_message(user, "web", "assistant", "❌ Действие отменено пользователем.", 0)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/pending-intents")
+async def api_pending_intents(user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    from .approval import get_pending_intent
+    intent = get_pending_intent(user)
+    if not intent:
+        return JSONResponse({"intent": None})
+    from .approval import format_intent_payload
+    return JSONResponse({
+        "intent": {
+            "id": intent["id"],
+            "action_type": intent["action_type"],
+            "display": format_intent_payload(intent),
+            "created_at": intent["created_at"],
+            "expires_at": intent["expires_at"],
+        }
     })

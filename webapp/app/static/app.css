@@ -109,3 +109,61 @@ textarea.soul-edit:focus { outline: 2px solid var(--accent); outline-offset: -1p
 .chat-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .chat-form button { padding: 0 18px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font-size: 20px; cursor: pointer; }
 .chat-form button:disabled { opacity: 0.5; cursor: wait; }
+
+/* ---- Approval Card ---- */
+.msg-approval .approval-card {
+  background: var(--pre-bg);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 8px;
+}
+.approval-action {
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+}
+.approval-payload {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-bottom: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.approval-buttons {
+  display: flex;
+  gap: 8px;
+}
+.btn-approve, .btn-reject {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 4px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.2s;
+}
+.btn-approve {
+  background: #10b981;
+  color: #fff;
+}
+.btn-approve:hover { filter: brightness(1.1); }
+.btn-reject {
+  background: #ef4444;
+  color: #fff;
+}
+.btn-reject:hover { filter: brightness(1.1); }
+.btn-approve:disabled, .btn-reject:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.approval-status {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.approval-done .approval-buttons { display: none; }
