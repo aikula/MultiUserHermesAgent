@@ -1,6 +1,7 @@
 """Chat: per-user context, Hermes API calls, history."""
 import asyncio
 import os
+from datetime import datetime, timezone
 
 import httpx
 
@@ -49,6 +50,15 @@ def build_system_prompt(uid: str) -> str:
     parts = [soul.strip()] if soul.strip() else ["# Ассистент\n\nПолезный помощник для пользователя."]
     if memory:
         parts.append("\n## Твоя память о юзере\n\n" + memory)
+
+    now_utc = datetime.now(timezone.utc)
+    parts.append(
+        f"\n## Текущее время (серверное)\n"
+        f"UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S %A')}\n"
+        f"ISO: {now_utc.isoformat()}\n"
+        "Используй это, когда юзер спрашивает про время/дату/дедлайны. "
+        "Не выдумывай — бери из этого блока."
+    )
 
     # User's files
     files = _get_user_files(uid)
