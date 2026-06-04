@@ -56,6 +56,18 @@ class TestDetectSkillRequest:
         assert name == "risk_review"
         assert cleaned == "Тема: ..."
 
+    def test_english_marker(self):
+        from app.chat import detect_skill_request
+        name, cleaned = detect_skill_request("[Use skill: daily_digest]\nSummarize today")
+        assert name == "daily_digest"
+        assert cleaned == "Summarize today"
+
+    def test_english_marker_case_insensitive(self):
+        from app.chat import detect_skill_request
+        name, cleaned = detect_skill_request("[use SKILL: Email_Reply]\nReply please")
+        assert name == "email_reply"
+        assert cleaned == "Reply please"
+
 
 # ----- build_skill_user_message -----
 

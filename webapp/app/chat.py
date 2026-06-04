@@ -13,7 +13,7 @@ from .skills.manager_templates import get_manager_templates_block
 # Marker for explicit skill activation (set by the Skills tab).
 # The full skill text is injected into the current turn's messages
 # (not into the cached system prompt) — keeps the prompt compact.
-SKILL_MARKER_RE = re.compile(r"^\s*\[Используй навык:\s*([a-z0-9_]+)\]\s*\n?", re.IGNORECASE)
+SKILL_MARKER_RE = re.compile(r"^\s*\[(?:Используй навык|Use skill):\s*([a-z0-9_]+)\]\s*\n?", re.IGNORECASE)
 
 HERMES_API_URL = os.environ.get("HERMES_API_URL", "http://hermes-gateway:8642")
 HERMES_API_KEY = os.environ["HERMES_API_KEY"]
