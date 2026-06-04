@@ -110,6 +110,21 @@ def build_system_prompt(uid: str) -> str:
     if skills_block:
         parts.append("\n" + skills_block)
 
+    # Web tools hint (spec 12) — the agent has search/fetch/parse/links/download
+    # via the /api/web/* backend endpoints. Bulk downloads still need approval
+    # (action_type=web_download_files). The hint is brief so the prompt stays
+    # compact; specific format guidance lives in the research_brief skill.
+    parts.append(
+        "\n## Веб-инструменты\n"
+        "Доступно через backend (не пиши скрипты с urllib/requests):\n"
+        "- web_search(query, limit) — SearxNG JSON\n"
+        "- web_fetch(url) — HTTP fetch + trafilatura cleanup\n"
+        "- web_extract_links(url, pattern) — anchors с фильтром\n"
+        "- web_download_files(urls, target_folder, max_count) — "
+        "требует подтверждения (action_type=web_download_files)\n"
+        "Поиск и fetch бесплатны; bulk download идёт через action_intent."
+    )
+
     return "\n\n".join(parts).strip()
 
 

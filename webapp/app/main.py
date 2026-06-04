@@ -662,6 +662,87 @@ async def api_skill_get(name: str, user: str | None = Depends(current_user)):
     return JSONResponse({"ok": True, "name": name, "content": md})
 
 
+@app.post("/api/skills/upload")
+async def api_skills_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    user: str | None = Depends(current_user),
+):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    from .skills.loader import LIBRARY_DIR
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "empty file")
+    name = (file.filename or "").strip()
+    if not name:
+        raise HTTPException(400, "filename is required")
+
+    import zipfile, io
+    from pathlib import Path
+
+    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+
+    # If it's a .md file, save directly
+    if name.lower().endswith(".md"):
+        safe_name = Path(name).name
+        # Reject path traversal
+        if "/" in safe_name or "\\" in safe_name:
+            raise HTTPException(400, "invalid filename")
+        (LIBRARY_DIR / safe_name).write_bytes(content)
+        return JSONResponse({"ok": True, "file": safe_name})
+
+    # If it's a .zip, extract .md files into the library
+    if name.lower().endswith(".zip"):
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(content))
+        except zipfile.BadZipFile:
+            raise HTTPException(400, "invalid zip file")
+        extracted = []
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            fname = Path(info.filename).name
+            if not fname.lower().endswith(".md"):
+                continue
+            if not fname or fname.startswith("."):
+                continue
+            if "/" in info.filename or "\\" in info.filename:
+                continue  # skip nested
+            skill_content = zf.read(info)
+            (LIBRARY_DIR / fname).write_bytes(skill_content)
+            extracted.append(fname)
+        if not extracted:
+            raise HTTPException(400, "no .md files found in zip archive")
+        return JSONResponse({"ok": True, "files": extracted})
+
+    raise HTTPException(400, "unsupported file type (use .md or .zip)")
+
+
+@app.delete("/api/skills/{name}")
+async def api_skills_delete(
+    request: Request,
+    name: str,
+    user: str | None = Depends(current_user),
+):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    from .skills.loader import LIBRARY_DIR, get_skill
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(400, "invalid skill name")
+    candidate = (LIBRARY_DIR / f"{name}.md").resolve()
+    try:
+        candidate.relative_to(LIBRARY_DIR.resolve())
+    except ValueError:
+        raise HTTPException(400, "invalid skill name")
+    if not candidate.is_file():
+        raise HTTPException(404, "skill not found")
+    candidate.unlink()
+    return JSONResponse({"ok": True, "deleted": name})
+
+
 # --- Scheduled jobs (spec 11) ---
 
 @app.get("/api/jobs")
@@ -1056,6 +1137,21 @@ async def api_approve(request: Request, user: str | None = Depends(current_user)
             await loop.run_in_executor(None, chat.save_message, user, "web", "assistant",
                               f"✅ Письмо отправлено на {payload['to']}", 0)
             return JSONResponse({"ok": True, "result": result})
+        elif intent["action_type"] == "web_download_files":
+            from .tools import web_tools
+            result = await web_tools.download_files(
+                user, payload["urls"],
+                target_folder=payload.get("target_folder", "downloads"),
+                max_count=payload.get("max_count"),
+            )
+            await loop.run_in_executor(None, execute_intent, intent_id, json.dumps(result, ensure_ascii=False), None)
+            saved_count = result["saved_count"]
+            skipped_count = len(result.get("skipped", []))
+            summary = f"✅ Скачано файлов: {saved_count}"
+            if skipped_count:
+                summary += f", пропущено: {skipped_count}"
+            await loop.run_in_executor(None, chat.save_message, user, "web", "assistant", summary, 0)
+            return JSONResponse({"ok": True, "result": result})
         else:
             await loop.run_in_executor(None, execute_intent, intent_id, None, f"Unknown action type: {intent['action_type']}")
             raise HTTPException(400, f"Unknown action type: {intent['action_type']}")
@@ -1105,4 +1201,95 @@ async def api_pending_intents(user: str | None = Depends(current_user)):
             "created_at": intent["created_at"],
             "expires_at": intent["expires_at"],
         }
+    })
+
+
+# --- Web tools API (spec 12) ---
+
+@app.post("/api/web/search")
+async def api_web_search(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    query = (body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(400, "query is required")
+    limit = int(body.get("limit") or 10)
+    from .tools import web_tools
+    results = await web_tools.search_web(query, limit=limit)
+    return JSONResponse({"ok": True, "results": results})
+
+
+@app.post("/api/web/fetch")
+async def api_web_fetch(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "url is required")
+    from .tools import web_tools
+    try:
+        result = await web_tools.fetch_url_async(url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return JSONResponse({"ok": True, **result})
+
+
+@app.post("/api/web/parse")
+async def api_web_parse(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    html = body.get("html") or ""
+    url = body.get("url")
+    from .tools import web_tools
+    result = web_tools.parse_html_to_text(html, url=url)
+    return JSONResponse({"ok": True, **result})
+
+
+@app.post("/api/web/links")
+async def api_web_links(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    body = await request.json()
+    from .tools import web_tools
+    result = web_tools.extract_links(
+        html=body.get("html") or "",
+        base_url=body.get("base_url") or "",
+        pattern=body.get("pattern"),
+        allowed_domains=body.get("allowed_domains"),
+        limit=int(body.get("limit") or 100),
+    )
+    return JSONResponse({"ok": True, **result})
+
+
+@app.post("/api/web/download")
+async def api_web_download(request: Request, user: str | None = Depends(current_user)):
+    """Bulk download needs approval (per spec 12).
+
+    The endpoint creates an action_intent with action_type='web_download_files'
+    and status='pending_approval'. The actual download happens in /api/approve
+    after the user confirms.
+    """
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    body = await request.json()
+    urls = body.get("urls") or []
+    if not isinstance(urls, list) or not urls:
+        raise HTTPException(400, "urls must be a non-empty list")
+    from .tools import web_tools
+    if len(urls) > web_tools.WEB_DOWNLOAD_MAX_FILES:
+        raise HTTPException(400, f"too many urls (max {web_tools.WEB_DOWNLOAD_MAX_FILES})")
+    target_folder = (body.get("target_folder") or "downloads").strip() or "downloads"
+    max_count = int(body.get("max_count") or len(urls))
+    payload = {"urls": urls, "target_folder": target_folder, "max_count": max_count}
+    from .approval import create_intent
+    intent = await asyncio.to_thread(create_intent, user, "web_download_files", payload)
+    return JSONResponse({
+        "ok": True,
+        "approval_required": True,
+        "intent_id": intent["id"],
+        "uid": user,
     })
