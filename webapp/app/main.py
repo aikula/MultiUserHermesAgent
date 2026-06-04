@@ -1215,8 +1215,17 @@ async def api_web_search(request: Request, user: str | None = Depends(current_us
     if not query:
         raise HTTPException(400, "query is required")
     limit = int(body.get("limit") or 10)
+    categories = (body.get("categories") or "").strip() or None
+    engines = (body.get("engines") or "").strip() or None
+    time_range = (body.get("time_range") or "").strip() or None
+    pageno = int(body.get("pageno") or 1)
+    language = (body.get("language") or "ru").strip()
+    safesearch = int(body.get("safesearch") or 1)
     from .tools import web_tools
-    results = await web_tools.search_web(query, limit=limit)
+    results = await web_tools.search_web(
+        query, limit=limit, categories=categories, engines=engines,
+        time_range=time_range, pageno=pageno, language=language, safesearch=safesearch,
+    )
     return JSONResponse({"ok": True, "results": results})
 
 

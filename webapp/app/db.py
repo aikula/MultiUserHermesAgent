@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     status TEXT NOT NULL DEFAULT 'enabled',-- 'enabled' | 'disabled' | 'deleted'
     schedule_type TEXT NOT NULL,           -- 'one_time' | 'daily' | 'weekly'
     run_at TEXT,                           -- ISO UTC; used for one_time and as the seed for daily/weekly
+    time_of_day TEXT,                      -- 'HH:MM' for daily/weekly
+    weekdays TEXT,                         -- JSON list of ints 0..6
     rrule TEXT,                            -- optional RFC5545/RRULE-ish; for MVP we just use it as a hint
     next_run_at TEXT,                      -- ISO UTC; the worker uses this
     channel TEXT NOT NULL DEFAULT 'web',   -- 'telegram' | 'web' | 'both'
@@ -174,6 +176,13 @@ def init_db() -> None:
         conn.execute("ALTER TABLE users ADD COLUMN email_password TEXT")
     if "google_connected" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN google_connected INTEGER DEFAULT 0")
+
+    # Migration: add scheduling fields to scheduled_jobs (idempotent).
+    _cols_jobs = [r[1] for r in conn.execute("PRAGMA table_info(scheduled_jobs)").fetchall()]
+    if "time_of_day" not in _cols_jobs:
+        conn.execute("ALTER TABLE scheduled_jobs ADD COLUMN time_of_day TEXT")
+    if "weekdays" not in _cols_jobs:
+        conn.execute("ALTER TABLE scheduled_jobs ADD COLUMN weekdays TEXT")
 
     # Migration: encrypt plaintext email passwords
     _migrate_plaintext_passwords(conn)

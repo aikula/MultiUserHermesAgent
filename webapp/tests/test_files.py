@@ -37,7 +37,7 @@ class TestFileUpload:
             from app.relay import _safe_filename
 
             # Only test extensions that are NOT in DANGEROUS_EXTENSIONS
-            unknown_exts = ['.jpg', '.png', '.gif', '.xml', '.yaml', '.doc', '.ppt']
+            unknown_exts = ['.jpg', '.png', '.gif', '.xml', '.doc', '.ppt']
             for ext in unknown_exts:
                 with pytest.raises(ValueError, match="not in allowed"):
                     _safe_filename(f"unknown{ext}", tmp_path)
@@ -53,9 +53,10 @@ class TestFileUpload:
                 del sys.modules["app.relay"]
             from app.relay import _safe_filename
 
-            mvp_exts = ['.txt', '.md', '.csv', '.json', '.pdf', '.docx', '.xlsx',
-                        '.oga', '.ogg', '.mp3', '.wav', '.m4a', '.opus']
-            for ext in mvp_exts:
+            allowed_exts = ['.txt', '.md', '.csv', '.json', '.pdf', '.docx', '.xlsx',
+                           '.oga', '.ogg', '.mp3', '.wav', '.m4a', '.opus',
+                           '.cer', '.crt', '.pem', '.key', '.log', '.yaml', '.yml', '.toml', '.ini', '.cfg']
+            for ext in allowed_exts:
                 name = _safe_filename(f"document{ext}", tmp_path)
                 assert name.endswith(ext), f"{ext} should be accepted"
 

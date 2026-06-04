@@ -1,38 +1,112 @@
 {% extends "base.html" %}
 {% block title %}Навыки — Hermes{% endblock %}
 {% block content %}
-<h1>Навыки</h1>
-<p class="lead">
-  Шаблоны управленческих задач. Навык — это инструкция для ассистента: формат, критерии качества, пример.
-  Нажми «Использовать в чате» — и ассистент отработает запрос по шагам.
-</p>
+<div class="skills-header">
+  <div>
+    <h1>Навыки</h1>
+    <p class="lead">
+      Шаблоны управленческих задач. Навык — это инструкция для ассистента: формат, критерии качества, пример.
+      Нажми «Использовать в чате» — и ассистент отработает запрос по шагам.
+    </p>
+  </div>
+  <div class="skills-toolbar">
+    <form id="upload-skill-form" enctype="multipart/form-data" class="upload-form" style="display:flex;gap:8px;align-items:center">
+      <input type="file" id="upload-skill-input" name="file" accept=".zip,.md" style="font-size:13px;max-width:160px">
+      <button type="submit" class="btn btn-primary">📥 Добавить</button>
+    </form>
+  </div>
+</div>
 
-{% for s in skills %}
-  <article class="skill-card" data-skill="{{ s.name }}" id="skill-{{ s.name }}">
-    <header class="skill-head">
-      <h2>{{ s.title }}</h2>
-      <code class="skill-name">{{ s.name }}</code>
-    </header>
-    <p class="skill-hint">{{ s.hint }}</p>
-    <details class="skill-body">
-      <summary>Показать полный шаблон</summary>
-      <pre class="skill-md">{{ s.full }}</pre>
-    </details>
-    <div class="skill-actions">
-      <button class="btn btn-primary btn-use-skill"
-              data-name="{{ s.name }}"
-              data-title="{{ s.title }}">Использовать в чате</button>
-    </div>
-  </article>
-{% endfor %}
+<div id="skills-error" class="alert" hidden></div>
 
-<script>
-  document.querySelectorAll('.btn-use-skill').forEach((btn) => {
+<div class="skills-grid" id="skills-grid">
+  {% for s in skills %}
+    <article class="skill-card" data-skill="{{ s.name }}" id="skill-{{ s.name }}">
+      <header class="skill-head">
+        <h2>{{ s.title }}</h2>
+        <code class="skill-name">{{ s.name }}</code>
+      </header>
+      <p class="skill-hint">{{ s.hint }}</p>
+      <div class="skill-body">
+        <details>
+          <summary>Показать полный шаблон</summary>
+          <pre class="skill-md">{{ s.full }}</pre>
+        </details>
+      </div>
+      <div class="skill-actions">
+        <button class="btn btn-primary btn-use-skill"
+                data-name="{{ s.name }}"
+                data-title="{{ s.title }}">Использовать в чате</button>
+        <button class="btn-del btn-delete-skill" data-name="{{ s.name }}">🗑️ Удалить</button>
+      </div>
+    </article>
+  {% endfor %}
+  {% if not skills %}
+    <p class="muted">Нет навыков. Добавьте .md файл или .zip архив через кнопку выше.</p>
+  {% endif %}
+</div>
+
+<script nonce="{{ csrf_token }}">
+  const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+
+  function showError(msg) {
+    const el = document.getElementById('skills-error');
+    el.textContent = msg;
+    el.hidden = false;
+    setTimeout(() => el.hidden = true, 5000);
+  }
+
+  // Upload skill (.md or .zip)
+  document.getElementById('upload-skill-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = document.getElementById('upload-skill-input').files[0];
+    if (!f) return;
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      const r = await fetch('{{ chat_prefix }}/api/skills/upload', {
+        method: 'POST',
+        headers: {'X-CSRF-Token': CSRF},
+        body: fd,
+      });
+      const data = await r.json();
+      if (data.ok) location.reload();
+      else showError(data.error || 'Ошибка загрузки');
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  // Delete skill
+  document.querySelectorAll('.btn-delete-skill').forEach(btn => {
+    btn.onclick = async () => {
+      const name = btn.dataset.name;
+      if (!confirm(`Удалить навык «${name}»?`)) return;
+      btn.disabled = true;
+      try {
+        const r = await fetch('{{ chat_prefix }}/api/skills/' + encodeURIComponent(name), {
+          method: 'DELETE',
+          headers: {'X-CSRF-Token': CSRF},
+        });
+        const data = await r.json();
+        if (data.ok) location.reload();
+        else showError(data.error || 'Ошибка удаления');
+      } catch (err) {
+        showError(err.message);
+      }
+    };
+  });
+
+  // Use skill
+  document.querySelectorAll('.btn-use-skill').forEach(btn => {
     btn.addEventListener('click', () => {
       const name = btn.dataset.name;
       const title = btn.dataset.title;
       const marker = '[Используй навык: ' + name + ']';
-      // Pre-fill the chat input on the index page.
       try {
         localStorage.setItem('hermes_prefill', JSON.stringify({
           marker: marker,

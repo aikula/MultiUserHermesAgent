@@ -32,6 +32,8 @@ from bs4 import BeautifulSoup
 # ---- Config ----
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8888").rstrip("/")
+SEARXNG_USER = os.environ.get("SEARXNG_USER") or None
+SEARXNG_PASS = os.environ.get("SEARXNG_PASS") or None
 WEB_FETCH_TIMEOUT_SECONDS = float(os.environ.get("WEB_FETCH_TIMEOUT_SECONDS", "20"))
 WEB_FETCH_MAX_BYTES = int(os.environ.get("WEB_FETCH_MAX_BYTES", "5000000"))
 WEB_DOWNLOAD_MAX_FILES = int(os.environ.get("WEB_DOWNLOAD_MAX_FILES", "10"))
@@ -328,15 +330,47 @@ async def _save_download(uid: str, folder: str, name: str, body: bytes) -> dict:
 
 # ---- Search ----
 
-async def search_web(query: str, limit: int = 10) -> list[dict]:
-    """Call SearxNG JSON API. Returns up to `limit` results."""
+async def search_web(
+    query: str,
+    limit: int = 10,
+    categories: str | None = None,
+    engines: str | None = None,
+    time_range: str | None = None,
+    pageno: int = 1,
+    language: str = "ru",
+    safesearch: int = 1,
+) -> list[dict]:
+    """Call SearxNG JSON API. Returns up to `limit` results.
+
+    Parameters:
+        query: search query string
+        limit: max results to return
+        categories: comma-separated category names (general, news, images, videos, etc.)
+        engines: comma-separated engine names (google, bing, wikipedia, etc.)
+        time_range: day, month, year (if engine supports it)
+        pageno: page number (default 1)
+        language: language code (default ru)
+        safesearch: 0=off, 1=moderate, 2=strict (default 1)
+    """
     if not SEARXNG_URL:
         return []
-    params = {"q": query, "format": "json", "language": "ru", "safesearch": 1}
+    params: dict[str, str | int] = {
+        "q": query, "format": "json",
+        "language": language, "safesearch": safesearch,
+        "pageno": pageno,
+    }
+    if categories:
+        params["categories"] = categories
+    if engines:
+        params["engines"] = engines
+    if time_range:
+        params["time_range"] = time_range
+
     headers = {"User-Agent": "hermes-webapp/0.1 (+search)"}
+    auth = httpx.BasicAuth(SEARXNG_USER, SEARXNG_PASS) if SEARXNG_USER and SEARXNG_PASS else None
     try:
         async with httpx.AsyncClient(timeout=WEB_FETCH_TIMEOUT_SECONDS, headers=headers) as client:
-            r = await client.get(f"{SEARXNG_URL}/search", params=params)
+            r = await client.get(f"{SEARXNG_URL}/search", params=params, auth=auth)
             r.raise_for_status()
             data = r.json()
     except httpx.HTTPError:
@@ -347,5 +381,7 @@ async def search_web(query: str, limit: int = 10) -> list[dict]:
             "title": item.get("title", ""),
             "url": item.get("url", ""),
             "snippet": item.get("content", ""),
+            "engine": item.get("engine", ""),
+            "category": item.get("category", ""),
         })
     return results

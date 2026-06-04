@@ -67,6 +67,7 @@ LONG_POLL_TIMEOUT = 25  # Telegram best practice; <1 wastes requests, >30 hits c
 ALLOWED_EXTENSIONS = {
     '.txt', '.md', '.csv', '.json', '.pdf', '.docx', '.xlsx',
     '.oga', '.ogg', '.mp3', '.wav', '.m4a', '.opus',
+    '.cer', '.crt', '.pem', '.key', '.log', '.yaml', '.yml', '.toml', '.ini', '.cfg',
 }
 
 # Dangerous extensions that should NEVER be saved

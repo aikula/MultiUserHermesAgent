@@ -117,7 +117,10 @@ def build_system_prompt(uid: str) -> str:
     parts.append(
         "\n## Веб-инструменты\n"
         "Доступно через backend (не пиши скрипты с urllib/requests):\n"
-        "- web_search(query, limit) — SearxNG JSON\n"
+        "- web_search(query, limit, categories, engines, time_range, pageno, language) — "
+        "SearxNG (243 движка). categories: general,news,images,videos,music,science,it,books,files."
+        " engines: google,bing,wikipedia,duckduckgo,habrahabr,github,arxiv,youtube,reddit и др."
+        " time_range: day,month,year. pageno: 1+.\n"
         "- web_fetch(url) — HTTP fetch + trafilatura cleanup\n"
         "- web_extract_links(url, pattern) — anchors с фильтром\n"
         "- web_download_files(urls, target_folder, max_count) — "

@@ -51,7 +51,14 @@ def _recompute_after_run(job: dict) -> str | None:
     """
     schedule_type = job["schedule_type"]
     weekdays = None
-    if job.get("rrule") and job["rrule"].startswith("WEEKLY;"):
+    wjs = job.get("weekdays")
+    if wjs:
+        import json as _json
+        try:
+            weekdays = _json.loads(wjs)
+        except (TypeError, ValueError):
+            weekdays = None
+    if weekdays is None and job.get("rrule") and job["rrule"].startswith("WEEKLY;"):
         weekdays = [int(d) for d in job["rrule"].split(";")[1].split(",") if d]
 
     now = datetime.now(timezone.utc)
@@ -65,27 +72,12 @@ def _recompute_after_run(job: dict) -> str | None:
         return None
 
     next_run = job_store.compute_next_run_at(
-        schedule_type, run_at=None, time_of_day=_extract_time_of_day(job),
+        schedule_type, run_at=None, time_of_day=job.get("time_of_day"),
         weekdays=weekdays, after=now,
     )
     job_store.update_next_run_at(job["id"], next_run)
     job_store.set_last_run(job["id"], now_iso(), "completed")
     return next_run
-
-
-def _extract_time_of_day(job: dict) -> str | None:
-    """For daily/weekly, the original `time_of_day` was used to set `run_at`
-    (the seed) at create time. Recover the HH:MM from that seed.
-    Returns HH:MM in UTC, or None if it cannot be derived.
-    """
-    seed = job.get("run_at")
-    if not seed:
-        return None
-    try:
-        dt = datetime.fromisoformat(seed)
-    except (TypeError, ValueError):
-        return None
-    return f"{dt.hour:02d}:{dt.minute:02d}"
 
 
 def _execute_one(job: dict) -> dict:

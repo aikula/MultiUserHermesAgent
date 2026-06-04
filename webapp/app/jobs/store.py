@@ -135,16 +135,19 @@ def create_job(
     job_id = "job_" + secrets.token_urlsafe(8)
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
     rrule = None
+    weekdays_json = None
     if weekdays:
         rrule = "WEEKLY;" + ",".join(str(d) for d in weekdays)
+        weekdays_json = json.dumps(weekdays)
 
     db = get_db()
     db.execute(
         "INSERT INTO scheduled_jobs (id, uid, title, kind, status, schedule_type, "
-        "run_at, rrule, next_run_at, channel, payload_json, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, 'enabled', ?, ?, ?, ?, ?, ?, ?, ?)",
-        (job_id, uid, title, kind, schedule_type, seed_iso, rrule, next_run,
-         channel, payload_json, now_iso(), now_iso()),
+        "run_at, time_of_day, weekdays, rrule, next_run_at, channel, payload_json, "
+        "created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 'enabled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (job_id, uid, title, kind, schedule_type, seed_iso, time_of_day, weekdays_json,
+         rrule, next_run, channel, payload_json, now_iso(), now_iso()),
     )
     return get_job(uid, job_id) or {}
 

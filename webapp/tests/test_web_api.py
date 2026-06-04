@@ -27,9 +27,10 @@ class TestSearchEndpoint:
     @pytest.mark.asyncio
     async def test_search_returns_results(self, authed, monkeypatch):
         from app.tools import web_tools
-        async def fake_search(query, limit=10):
+        async def fake_search(query, **kwargs):
             return [
-                {"title": "X", "url": "https://example.com/x", "snippet": "..."},
+                {"title": "X", "url": "https://example.com/x", "snippet": "...",
+                 "engine": "test", "category": "general"},
             ]
         monkeypatch.setattr(web_tools, "search_web", fake_search)
         r = await authed.post("/api/web/search", json={"query": "AI agents", "limit": 5})
