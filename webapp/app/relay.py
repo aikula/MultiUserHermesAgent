@@ -438,8 +438,11 @@ class TelegramRelay:
         if not tg_id:
             return
 
-        # Handle /start command
-        if text and (text == "/start" or text.startswith("/start ")):
+        # Handle /start command (also accept /login as alias for compatibility)
+        if text and (text == "/start" or text.startswith("/start ") or text == "/login" or text.startswith("/login ")):
+            # Normalize: rewrite /login to /start logic
+            if text.startswith("/login"):
+                text = "/start" + text[len("/login"):]
             code = text.split(maxsplit=1)[1].strip() if " " in text else ""
             if not code:
                 await self.send(
@@ -507,7 +510,7 @@ class TelegramRelay:
             await self.send(
                 chat_id,
                 "📖 Доступные команды:\n\n"
-                "/start CODE — привязать или зарегистрироваться\n"
+                "/start CODE — привязать или зарегистрироваться (/login — алиас)\n"
                 "/whoami — твой UID\n"
                 "/files — список файлов\n"
                 "/unlink — отвязать аккаунт\n"

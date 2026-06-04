@@ -1,12 +1,8 @@
 """Tests: relay robustness — slash-command guard, typing indicator, gateway-confused fallback.
 
-Covers Commit 1 (Sprint 0 stabilization):
-- KNOWN_COMMANDS whitelist blocks unknown slash commands
-- typing() is best-effort and never raises
-- _deliver_response detects gateway-confused hallucinations and sends a friendly fallback
-- _deliver_response still routes approval intents to the approval card
-- _deliver_response sends plain content for normal replies
-- Long-poll uses LONG_POLL_TIMEOUT constant
+Covers:
+- Commit 1: KNOWN_COMMANDS guard, typing, CONFUSED_PATTERNS, _deliver_response routing, LONG_POLL_TIMEOUT
+- Commit 2: /login alias for /start
 """
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -244,3 +240,84 @@ class TestGetUpdatesTimeout:
         # Old code had `params={"timeout": 1, ...}` — make sure that's gone.
         assert '"timeout": 1' not in source
         assert "'timeout': 1" not in source
+
+
+class TestLoginAlias:
+    """`/login` is a documented alias for `/start` (forwards to the same handler)."""
+
+    @pytest.mark.asyncio
+    async def test_login_without_code_shows_howto(self, monkeypatch):
+        """`/login` (no code) should send the same onboarding prompt as `/start`."""
+        _, instance = _make_relay(monkeypatch)
+        sent: list[dict] = []
+
+        async def fake_send(chat_id, text, parse_mode=None):
+            sent.append({"text": text, "parse_mode": parse_mode})
+
+        instance.send = fake_send
+        # If the alias accidentally fell through to LLM, this would be called.
+        instance.process_chat_message = AsyncMock()
+
+        await instance.handle_update(_update_with_text("/login"))
+
+        instance.process_chat_message.assert_not_called()
+        assert len(sent) == 1
+        # The "Чтобы начать" onboarding should be sent (parse_mode=HTML).
+        msg = sent[0]["text"]
+        assert "Чтобы начать" in msg
+        assert "/start" in msg  # still shows /start in the example
+        assert sent[0]["parse_mode"] == "HTML"
+
+    @pytest.mark.asyncio
+    async def test_login_with_code_calls_consume_link_code(self, monkeypatch):
+        """`/login ABC123` should reach consume_link_code (not fall through to LLM)."""
+        _, instance = _make_relay(monkeypatch)
+        sent: list[dict] = []
+
+        async def fake_send(chat_id, text, parse_mode=None):
+            sent.append({"text": text})
+
+        instance.send = fake_send
+        instance.process_chat_message = AsyncMock()
+
+        async def fake_consume_link_code(code, telegram_id):
+            fake_consume_link_code.called_with = (code, telegram_id)
+            return True, "ok", "user-uid-123"
+
+        instance.consume_link_code = fake_consume_link_code
+
+        await instance.handle_update(_update_with_text("/login ABC123", tg_id=999, chat_id=888))
+
+        instance.process_chat_message.assert_not_called()
+        assert fake_consume_link_code.called_with == ("ABC123", 999)
+        assert any("привязан" in m["text"].lower() for m in sent)
+
+    @pytest.mark.asyncio
+    async def test_login_alias_is_documented_in_help(self, monkeypatch):
+        """Sanity: `/help` mentions `/login` as alias (separate from the dedicated test)."""
+        # The dedicated help test below already covers this; kept here to mark
+        # the alias discoverability contract.
+        _, instance = _make_relay(monkeypatch)
+
+        async def fake_send(chat_id, text, parse_mode=None):
+            pass
+
+        instance.send = fake_send
+        await instance.handle_update(_update_with_text("/help"))
+
+    @pytest.mark.asyncio
+    async def test_help_text_mentions_login_alias(self, monkeypatch):
+        """`/help` should advertise `/login` as alias to make it discoverable."""
+        _, instance = _make_relay(monkeypatch)
+        sent: list[dict] = []
+
+        async def fake_send(chat_id, text, parse_mode=None):
+            sent.append({"text": text})
+
+        instance.send = fake_send
+
+        await instance.handle_update(_update_with_text("/help"))
+
+        assert len(sent) == 1
+        assert "/login" in sent[0]["text"]
+        assert "алиас" in sent[0]["text"]
