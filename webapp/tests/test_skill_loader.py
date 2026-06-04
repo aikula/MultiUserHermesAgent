@@ -1,6 +1,4 @@
 """Tests: skills library loader (spec 13)."""
-from pathlib import Path
-
 import pytest
 
 
