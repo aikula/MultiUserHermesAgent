@@ -48,12 +48,30 @@ curl -fsS http://localhost:9000/health
 ## Webapp Features
 
 - **Auth** — register with invite code, login, session cookies
-- **Chat** — per-user memory scoping via `X-Hermes-Session-Key`
+- **Chat** — per-user memory scoping via `X-Hermes-Session-Key`, server UTC time injected into system prompt
 - **Profile** — name, password, SOUL.md, email settings
 - **Email integration** — IMAP/SMTP with encrypted credentials
-- **Telegram relay** — `@aik_hermesbot` with file handling
+- **Telegram relay** — `@aik_hermesbot` with file handling, voice message STT, slash-command whitelist, typing indicator
 - **Approval flow** — single confirmation for external actions
 - **Manager templates** — 6 demo scenarios (email, meeting, tasks, etc.)
+
+## Telegram Relay
+
+Slash-commands handled locally (anything unknown is NOT sent to LLM, avoiding
+the "No main session found" hallucination):
+
+| Command | Effect |
+|---|---|
+| `/start CODE` | Link existing account or register with invite-code (alias: `/login`) |
+| `/login CODE` | Alias for `/start` |
+| `/whoami` | Show current UID |
+| `/files` | List saved files |
+| `/unlink` | Unlink Telegram from account |
+| `/help` | Show this list |
+
+Plus, while a chat request is in flight, the bot shows a "печатает…" indicator.
+If the gateway ever hallucinates a "no main session" error, the relay
+intercepts it and shows a human-friendly recovery hint instead.
 
 ## Security
 
@@ -89,8 +107,8 @@ curl -fsS http://localhost:9000/health
 ```bash
 cd webapp
 pip install -r requirements.txt -r requirements-dev.txt
-pytest -q           # 77 tests
-ruff check app      # lint
+pytest -q           # 102 tests
+ruff check app tests
 bandit -r app -ll   # security
 ```
 
