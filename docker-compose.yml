@@ -1,6 +1,9 @@
 services:
   gateway:
-    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    image: hermes-gateway:local
     container_name: hermes-gateway
     restart: unless-stopped
     user: "${HERMES_UID:-0}:${HERMES_GID:-0}"
@@ -121,6 +124,8 @@ services:
       - TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID:-}
       - TELEGRAM_LINK_TTL=${TELEGRAM_LINK_TTL:-600}
       - WEBAPP_INTERNAL_SECRET=${WEBAPP_INTERNAL_SECRET}
+      - STT_API_URL=${STT_API_URL:-}
+      - STT_API_KEY=${STT_API_KEY:-}
     volumes:
       - /root/.hermes-app:/opt/app/data
       - /root/.hermes/users:/opt/hermes-users:rw
