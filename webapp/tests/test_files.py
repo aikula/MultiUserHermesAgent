@@ -1,7 +1,9 @@
-"""Tests: File upload — P0-5 from spec 01."""
+"""Tests: File upload — P0-2 from spec 01."""
 import os
 import sys
 from unittest.mock import patch
+
+import pytest
 
 
 
@@ -9,25 +11,21 @@ class TestFileUpload:
     """File validation and safety."""
 
     def test_rejects_dangerous_extensions(self, tmp_path):
-        # Mock env vars needed by relay import
         env = {
             "HERMES_API_URL": "http://test",
             "HERMES_API_KEY": "test",
             "HERMES_MODEL": "test",
         }
         with patch.dict(os.environ, env):
-            # Reimport to avoid stale module cache
             if "app.relay" in sys.modules:
                 del sys.modules["app.relay"]
             from app.relay import _safe_filename, DANGEROUS_EXTENSIONS
 
             for ext in DANGEROUS_EXTENSIONS:
-                name = _safe_filename(f"malware{ext}", tmp_path)
-                # Should be renamed to .txt
-                assert not name.endswith(ext), f"{ext} should be rejected"
-                assert name.endswith(".txt"), f"{ext} should become .txt"
+                with pytest.raises(ValueError, match="dangerous"):
+                    _safe_filename(f"malware{ext}", tmp_path)
 
-    def test_accepts_safe_document_types(self, tmp_path):
+    def test_rejects_unknown_extensions(self, tmp_path):
         env = {
             "HERMES_API_URL": "http://test",
             "HERMES_API_KEY": "test",
@@ -38,8 +36,26 @@ class TestFileUpload:
                 del sys.modules["app.relay"]
             from app.relay import _safe_filename
 
-            safe_exts = ['.txt', '.md', '.csv', '.json', '.pdf', '.docx', '.xlsx', '.jpg', '.png']
-            for ext in safe_exts:
+            # Only test extensions that are NOT in DANGEROUS_EXTENSIONS
+            unknown_exts = ['.jpg', '.png', '.gif', '.xml', '.yaml', '.doc', '.ppt']
+            for ext in unknown_exts:
+                with pytest.raises(ValueError, match="not in allowed"):
+                    _safe_filename(f"unknown{ext}", tmp_path)
+
+    def test_accepts_mvp_allowed_types(self, tmp_path):
+        env = {
+            "HERMES_API_URL": "http://test",
+            "HERMES_API_KEY": "test",
+            "HERMES_MODEL": "test",
+        }
+        with patch.dict(os.environ, env):
+            if "app.relay" in sys.modules:
+                del sys.modules["app.relay"]
+            from app.relay import _safe_filename
+
+            mvp_exts = ['.txt', '.md', '.csv', '.json', '.pdf', '.docx', '.xlsx',
+                        '.oga', '.ogg', '.mp3', '.wav', '.m4a', '.opus']
+            for ext in mvp_exts:
                 name = _safe_filename(f"document{ext}", tmp_path)
                 assert name.endswith(ext), f"{ext} should be accepted"
 

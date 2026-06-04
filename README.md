@@ -57,15 +57,16 @@ curl -fsS http://localhost:9000/health
 
 ## Security
 
-### P0 Hardening (implemented)
+### P0 Hardening (status: active)
 
 - **Secrets not in LLM prompt** — email passwords never exposed to model
-- **Encryption at rest** — Fernet encryption for email credentials
-- **Hard quota** — blocks requests when `quota_remaining <= 0`
-- **Rate limiting** — 10 login attempts per 5 minutes
+- **Encryption at rest** — Fernet encryption for email credentials via `USER_SECRET_ENCRYPTION_KEY`
+- **Hard quota** — blocks requests with reserve tokens; `record()` clamps to 0
+- **Rate limiting** — 10 login attempts per 5 minutes, requires 429
 - **CSRF protection** — token validation for browser POST
-- **Secure cookies** — `httponly`, `samesite=lax`, `secure`
-- **File upload safety** — UUID filenames, dangerous extension rejection
+- **Secure cookies** — `httponly`, `samesite`/`secure` configurable via env
+- **File upload safety** — UUID filenames, dangerous/unknown extension rejection
+- **Constant-time comparison** — internal secret check via `hmac.compare_digest`
 
 ### Security Model
 
@@ -103,9 +104,13 @@ Required:
 - `TELEGRAM_ADMIN_CHAT_ID` — admin notifications
 
 Optional:
-- `ENCRYPTION_KEY` — email credential encryption
+- `USER_SECRET_ENCRYPTION_KEY` — dedicated key for email credential encryption (recommended; fallback: WEBAPP_INTERNAL_SECRET → JWT_SECRET)
 - `WELCOME_QUOTA` — initial token quota (default: 2M)
 - `ALERT_THRESHOLD_PCT` — quota alert threshold (default: 80%)
+- `MIN_QUOTA_RESERVE_TOKENS` — reserve tokens for hard quota (default: 2048)
+- `MAX_TOKENS_PER_RESPONSE` — max tokens per response estimate (default: 1024)
+- `COOKIE_SECURE` — set Secure flag on session cookie (default: true)
+- `COOKIE_SAMESITE` — set SameSite flag (default: lax)
 
 ## License
 

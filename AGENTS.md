@@ -37,7 +37,7 @@ Internet ──► Traefik (:443, tghub-network)
                           └─ logs/, cron/
 ```
 
-Внешние сервисы: `tghub-traefik`, Fireworks AI API, прокси `107.173.19.16:3128` (для Telegram из РФ).
+Внешние сервисы: `tghub-traefik`, Fireworks AI API, прокси `107.173.19.16:3128` (для Telegram из РФ), GigaAM Voice API (`tts.kulinich.ai`) для STT.
 
 ## Файлы и их роль
 
@@ -141,6 +141,7 @@ docker exec hermes-gateway hermes doctor
 - **Сменить модель**: `hermes model` или `hermes config set model.default <name>`.
 - **Раскомментировать `fallback_model`** в `~/.hermes/config.yaml:510` — указать провайдера (openrouter, openai-codex, nous, kimi-coding и др., см. комментарий).
 - **Traefik для gateway API**: добавить router/service labels в `docker-compose.yml` (сейчас API доступен только внутри сети).
+- **STT (голосовые сообщения Telegram)**: используется GigaAM Voice API (`tts.kulinich.ai`). API ленивое — при `wait_for_result=false` возвращает `job_id` для polling. Переменные: `STT_API_URL`, `STT_API_KEY` (Bearer token). Модель: `gigaam-e2e` (русская речь).
 
 ## Известные ограничения
 

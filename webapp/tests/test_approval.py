@@ -91,3 +91,25 @@ class TestApprovalFlow:
         # (intent is already executed, get_pending_intent returns None)
         from app.approval import get_pending_intent
         assert get_pending_intent(test_user) is None
+
+
+class TestEmailToolImport:
+    """P0-1: Email tool import must work."""
+
+    def test_email_tools_import(self):
+        from app.tools.email_tools import send_email, check_connection
+        assert callable(send_email)
+        assert callable(check_connection)
+
+    def test_approve_non_pending_intent_returns_controlled_error(self, test_user):
+        from app.approval import create_intent, approve_intent, execute_intent, get_intent_by_id_for_user
+        payload = {"to": "test@test.com", "subject": "Test", "body": "Hello"}
+        intent = create_intent(test_user, "email_send", payload)
+        approve_intent(intent["id"])
+        execute_intent(intent["id"], result_json='{"ok": true}')
+        # Can't approve again
+        assert approve_intent(intent["id"]) is False
+        # get_intent_by_id_for_user should return the executed intent
+        found = get_intent_by_id_for_user(intent["id"], test_user)
+        assert found is not None
+        assert found["status"] == "executed"

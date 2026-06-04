@@ -32,7 +32,7 @@ def setup_test_env(tmp_path):
         "HERMES_SHARED_DIR": str(shared_dir),
         "USERS_DB_PATH": str(db_path),
         "WELCOME_QUOTA": "2000000",
-        "ENCRYPTION_KEY": "test-encryption-key-12345",
+        "USER_SECRET_ENCRYPTION_KEY": "test-encryption-key-12345",
     }
 
     with patch.dict(os.environ, env):
