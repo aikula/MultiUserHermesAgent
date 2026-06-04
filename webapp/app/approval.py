@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 INTENT_TTL_MINUTES = 15
 
 # Action types that require approval
-REVIEW_ACTIONS = {"email_send", "calendar_create", "calendar_update", "telegram_send_external", "file_share_external", "web_download_files"}
+REVIEW_ACTIONS = {"email_send", "calendar_create", "calendar_update", "telegram_send_external", "file_share_external", "web_download_files", "create_scheduled_job"}
 
 # --- Confirmation / rejection parsers ---
 
@@ -230,6 +230,18 @@ def format_intent_payload(intent: dict) -> str:
             f"Папка: {folder}\n"
             f"Лимит: {max_count} файлов\n"
             f"Источники:\n{preview}"
+        )
+    elif action == "create_scheduled_job":
+        kind = payload.get("kind", "?")
+        schedule = payload.get("schedule_type", "?")
+        channel = payload.get("channel", "web")
+        title = payload.get("title", "")
+        message = (payload.get("payload") or {}).get("message") or (payload.get("payload") or {}).get("prompt") or ""
+        preview = f": {title}" if title else ""
+        return (
+            f"📋 **Создание автоматизации**{preview}\n"
+            f"Тип: {kind} | Расписание: {schedule} | Канал: {channel}\n"
+            f"{'Текст: ' + message[:150] if message else ''}"
         )
     else:
         return f"⚡ Действие: {action}\nДанные: {json.dumps(payload, ensure_ascii=False)[:300]}"

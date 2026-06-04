@@ -147,4 +147,18 @@
       }
     });
   });
+
+  // Gateway cron job deletion
+  document.querySelectorAll(".btn-delete-gateway").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!confirm("Удалить задачу агента? Это действие необратимо.")) return;
+      try {
+        await api(`/api/gateway-cron/${b.dataset.id}`, { method: "DELETE" });
+        const row = b.closest("tr");
+        if (row) row.remove();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
 })();

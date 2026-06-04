@@ -318,6 +318,26 @@ class TelegramRelay:
                         await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", f"✅ Письмо отправлено на {payload['to']}", 0)
                         await self.send(chat_id, f"✅ Письмо отправлено на {payload['to']}")
                         return
+                    elif pending["action_type"] == "create_scheduled_job":
+                        from .jobs import store as job_store
+                        job_payload = payload.get("payload") or {}
+                        if not job_payload and payload.get("message"):
+                            job_payload = {"message": payload["message"]}
+                        if not job_payload and payload.get("prompt"):
+                            job_payload = {"prompt": payload["prompt"]}
+                        job = await loop.run_in_executor(
+                            None, job_store.create_job,
+                            uid, payload.get("title", ""), payload.get("kind", "reminder"),
+                            payload.get("schedule_type", "one_time"),
+                            payload.get("run_at"), payload.get("time_of_day"),
+                            payload.get("weekdays"), payload.get("channel", "web"),
+                            job_payload,
+                        )
+                        await loop.run_in_executor(None, execute_intent, pending["id"], json.dumps(job, ensure_ascii=False, default=str), None)
+                        title = job.get("title", payload.get("kind", "?"))
+                        await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", f"✅ Автоматизация «{title}» создана", 0)
+                        await self.send(chat_id, f"✅ Автоматизация «{title}» создана")
+                        return
                     else:
                         await loop.run_in_executor(None, execute_intent, pending["id"], None, f"Unknown action: {pending['action_type']}")
                         await self.send(chat_id, "⚠️ Неизвестный тип действия.")

@@ -849,8 +849,52 @@ async def automations_page(request: Request, user: str | None = Depends(current_
         lambda: get_db().execute("SELECT login, name FROM users WHERE uid=?", (user,)).fetchone()
     )
     return _render(request, "automations.html",
-                   user={"uid": user, **(dict(u) if u else {"login": "?", "name": "?"})},
-                   jobs=jobs, runs=[dict(r) for r in runs])
+user={"uid": user, **(dict(u) if u else {"login": "?", "name": "?"})},
+                    jobs=jobs, runs=[dict(r) for r in runs], gateway_jobs=await _gateway_cron_jobs())
+
+
+@app.get("/api/gateway-cron")
+async def api_gateway_cron(user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    return JSONResponse({"ok": True, "jobs": await _gateway_cron_jobs()})
+
+
+@app.delete("/api/gateway-cron/{job_id}")
+async def api_gateway_cron_delete(job_id: str, request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    gateway_dir = Path("/opt/hermes-cron")
+    cron_path = gateway_dir / "jobs.json"
+    try:
+        data = json.loads(cron_path.read_text(encoding="utf-8")) if cron_path.exists() else {"jobs": []}
+    except (json.JSONDecodeError, OSError):
+        data = {"jobs": []}
+    before = len(data.get("jobs", []))
+    data["jobs"] = [j for j in data.get("jobs", []) if j.get("id") != job_id]
+    if len(data["jobs"]) == before:
+        raise HTTPException(404, "gateway cron job not found")
+    cron_path.parent.mkdir(parents=True, exist_ok=True)
+    cron_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return JSONResponse({"ok": True, "deleted": job_id})
+
+
+async def _gateway_cron_jobs() -> list[dict]:
+    """Read gateway's cron/jobs.json and return simplified list."""
+    loop = asyncio.get_running_loop()
+
+    def _read():
+        cron_path = Path("/opt/hermes-cron") / "jobs.json"
+        if not cron_path.exists():
+            return []
+        try:
+            data = json.loads(cron_path.read_text(encoding="utf-8"))
+            return data.get("jobs", [])
+        except (json.JSONDecodeError, OSError):
+            return []
+
+    return await loop.run_in_executor(None, _read)
 
 
 @app.get("/api/files")
@@ -990,6 +1034,29 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
                         await loop.run_in_executor(None, chat.save_message, user, "web", "assistant",
                                           f"✅ Письмо отправлено на {payload['to']}", 0)
                         return JSONResponse({"ok": True, "intent_id": pending["id"], "result": result})
+                    elif pending["action_type"] == "create_scheduled_job":
+                        from .jobs import store as job_store
+                        job_payload = payload.get("payload") or {}
+                        if not job_payload and payload.get("message"):
+                            job_payload = {"message": payload["message"]}
+                        if not job_payload and payload.get("prompt"):
+                            job_payload = {"prompt": payload["prompt"]}
+                        job = await asyncio.to_thread(
+                            job_store.create_job,
+                            uid=user,
+                            title=payload.get("title", ""),
+                            kind=payload.get("kind", "reminder"),
+                            schedule_type=payload.get("schedule_type", "one_time"),
+                            run_at=payload.get("run_at"),
+                            time_of_day=payload.get("time_of_day"),
+                            weekdays=payload.get("weekdays"),
+                            channel=payload.get("channel", "web"),
+                            payload=job_payload,
+                        )
+                        await loop.run_in_executor(None, execute_intent, pending["id"], json.dumps(job, ensure_ascii=False, default=str), None)
+                        summary = f"✅ Автоматизация «{job.get('title', payload.get('kind', '?'))}» создана"
+                        await loop.run_in_executor(None, chat.save_message, user, "web", "assistant", summary, 0)
+                        return JSONResponse({"ok": True, "intent_id": pending["id"], "job": job})
                     else:
                         await loop.run_in_executor(None, execute_intent, pending["id"], None, f"Unknown action: {pending['action_type']}")
                         return JSONResponse({"ok": False, "error": f"Unknown action: {pending['action_type']}"})

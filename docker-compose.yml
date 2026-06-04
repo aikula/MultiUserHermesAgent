@@ -130,6 +130,7 @@ services:
       - /root/.hermes-app:/opt/app/data
       - /root/.hermes/users:/opt/hermes-users:rw
       - /root/.hermes-shared:/opt/hermes-shared:rw
+      - /root/.hermes/cron:/opt/hermes-cron:ro
     networks:
       - tghub-network
     labels:

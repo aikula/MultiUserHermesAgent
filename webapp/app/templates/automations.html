@@ -145,5 +145,42 @@
   {% endif %}
 </section>
 
+{% if gateway_jobs %}
+<section class="card">
+  <h2>Задачи агента (gateway cron)</h2>
+  <p class="lead">
+    Эти задачи созданы агентом через свой внутренний cron. Они <strong>не могут</strong> отправлять
+    уведомления в Telegram — для этого используйте формы выше (webapp-автоматизации).
+  </p>
+  <table class="jobs-table">
+    <thead>
+      <tr><th>Название</th><th>Расписание</th><th>Статус</th><th>Действия</th></tr>
+    </thead>
+    <tbody>
+      {% for gj in gateway_jobs %}
+        <tr data-gateway-job="{{ gj.id }}">
+          <td>{{ gj.name or gj.id[:8] }}</td>
+          <td><code>{{ gj.schedule_display or gj.schedule | default('?') }}</code></td>
+          <td>
+            {% if gj.last_error %}
+              <span class="status status-error" title="{{ gj.last_error }}">ошибка</span>
+            {% elif gj.last_delivery_error %}
+              <span class="status status-error" title="{{ gj.last_delivery_error }}">ошибка доставки</span>
+            {% elif gj.state == 'scheduled' %}
+              <span class="status status-enabled">запланирована</span>
+            {% else %}
+              <span class="status status-{{ gj.state or 'unknown' }}">{{ gj.state or '?' }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <button class="btn btn-small btn-danger btn-delete-gateway" data-id="{{ gj.id }}">🗑 Удалить</button>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
 <script src="{{ chat_prefix }}/static/automations.js"></script>
 {% endblock %}

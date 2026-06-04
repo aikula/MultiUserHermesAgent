@@ -128,6 +128,30 @@ def build_system_prompt(uid: str) -> str:
         "Поиск и fetch бесплатны; bulk download идёт через action_intent."
     )
 
+    # Automation hint (spec 11) — the agent must NOT use its own cron.
+    # Instead, it creates jobs through the webapp scheduler via action_intent.
+    parts.append(
+        "\n## Автоматизации и напоминания\n"
+        "НЕ используй свой внутренний cron (hermes cron) — он не может отправлять в Telegram.\n"
+        "Для напоминаний, регулярных задач и автоматизаций ИСПОЛЬЗУЙ action_intent:\n"
+        "```action_intent\n"
+        '{"action_type": "create_scheduled_job", "payload": {\n'
+        '  "title": "Название",\n'
+        '  "kind": "reminder",\n'
+        '  "schedule_type": "one_time|daily|weekly",\n'
+        '  "run_at": "2026-06-04T15:00:00+00:00",\n'
+        '  "time_of_day": "09:00",\n'
+        '  "weekdays": [0,2,4],\n'
+        '  "channel": "web|telegram|both",\n'
+        '  "payload": {"message": "Текст напоминания"}\n'
+        '}}\n'
+        "```\n"
+        "kind: reminder (напоминание), morning_digest (утренний дайджест), custom_prompt (произвольный запрос).\n"
+        "schedule_type: one_time (однократное), daily (ежедневно), weekly (по дням недели).\n"
+        "channel: web — только в веб, telegram — только в Telegram, both — оба канала.\n"
+        "Для morning_digest и custom_prompt: payload.prompt — текст запроса к LLM."
+    )
+
     return "\n\n".join(parts).strip()
 
 
