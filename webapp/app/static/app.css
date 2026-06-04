@@ -237,10 +237,11 @@ textarea.soul-edit:focus { outline: 2px solid var(--accent); outline-offset: -1p
 
 /* ---- Modals ---- */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.4);
-  display: flex; align-items: center; justify-content: center;
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+  align-items: center; justify-content: center;
   z-index: 1000; padding: 16px;
 }
+.modal-overlay.open { display: flex; }
 .modal-box {
   background: var(--card); border-radius: 12px; padding: 24px;
   max-width: 500px; width: 100%; max-height: 80vh; overflow-y: auto;

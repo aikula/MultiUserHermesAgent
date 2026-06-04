@@ -66,7 +66,7 @@
 </div>
 
 <!-- Modal: create folder -->
-<div id="modal-mkdir" class="modal-overlay" hidden>
+<div id="modal-mkdir" class="modal-overlay">
   <div class="modal-box">
     <h2>📁 Создать папку</h2>
     <label>Имя папки:
@@ -81,7 +81,7 @@
 </div>
 
 <!-- Modal: create text file -->
-<div id="modal-write-text" class="modal-overlay" hidden>
+<div id="modal-write-text" class="modal-overlay">
   <div class="modal-box">
     <h2>📝 Создать текстовый файл</h2>
     <label>Имя (с .md или .txt):
@@ -99,7 +99,7 @@
 </div>
 
 <!-- Modal: preview -->
-<div id="modal-preview" class="modal-overlay" hidden>
+<div id="modal-preview" class="modal-overlay">
   <div class="modal-box" style="max-width:640px">
     <div class="preview-header">
       <h2 id="preview-title">Просмотр</h2>
@@ -115,7 +115,7 @@
 <script nonce="{{ csrf_token }}">
   const CSRF = document.querySelector('meta[name="csrf-token"]').content;
   const CURRENT_PATH = {{ listing.current_path|tojson }};
-  const CHAT_URL = {{ (chat_prefix + '/chat/')|tojson }};
+  const CHAT_URL = '{{ chat_prefix }}/';
 
   async function api(method, url, body) {
     const headers = {'X-CSRF-Token': CSRF};
@@ -124,8 +124,8 @@
     return r;
   }
 
-  function showModal(id) { document.getElementById(id).hidden = false; }
-  function hideModal(id) { document.getElementById(id).hidden = true; }
+  function showModal(id) { document.getElementById(id).classList.add('open'); }
+  function hideModal(id) { document.getElementById(id).classList.remove('open'); }
   function showError(el, msg) { el.textContent = msg; el.hidden = false; }
   function hideError(el) { el.hidden = true; }
 
@@ -274,7 +274,7 @@
   document.getElementById('modal-preview').onclick = (e) => { if (e.target === e.currentTarget) hideModal('modal-preview'); };
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      document.querySelectorAll('.modal-overlay:not([hidden])').forEach(el => el.hidden = true);
+      document.querySelectorAll('.modal-overlay.open').forEach(el => hideModal(el.id));
     }
   });
 </script>
