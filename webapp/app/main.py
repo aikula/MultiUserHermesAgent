@@ -15,8 +15,8 @@ from pathlib import Path
 import bcrypt
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, Form, HTTPException, Header, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Header, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -235,7 +235,11 @@ def register_submit(
         return _render(request, "register.html", error="Логин пустой или пароль < 10 символов", login=login, status_code=400)
 
     db = get_db()
-    inv = db.execute("SELECT 1 FROM invite_codes WHERE code=? AND used_by IS NULL", (invite_code,)).fetchone()
+    inv = db.execute(
+        "SELECT 1 FROM invite_codes WHERE code=? AND used_by IS NULL "
+        "AND (expires_at IS NULL OR expires_at > ?)",
+        (invite_code, now_iso()),
+    ).fetchone()
     if not inv:
         return _render(request, "register.html", error="Неверный или использованный invite-code", login=login, status_code=400)
     if db.execute("SELECT 1 FROM users WHERE login=?", (login,)).fetchone():
@@ -415,6 +419,22 @@ def api_google_status(user: str | None = Depends(current_user)):
     return JSONResponse({"connected": connected})
 
 
+@app.post("/api/profile/google/disconnect")
+async def api_google_disconnect(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    token_path = HERMES_USERS_DIR / user / "google_token.json"
+    if token_path.exists():
+        await asyncio.to_thread(token_path.unlink)
+    await asyncio.to_thread(
+        lambda: get_db().execute(
+            "UPDATE users SET google_connected=0 WHERE uid=?", (user,)
+        )
+    )
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/profile/generate-link")
 def api_generate_link(request: Request, user: str | None = Depends(current_user)):
     if not user:
@@ -481,7 +501,11 @@ async def api_redeem_invite(request: Request, _: bool = Depends(_check_internal)
 
     def _redeem():
         db = get_db()
-        inv = db.execute("SELECT 1 FROM invite_codes WHERE code=? AND used_by IS NULL", (code,)).fetchone()
+        inv = db.execute(
+            "SELECT 1 FROM invite_codes WHERE code=? AND used_by IS NULL "
+            "AND (expires_at IS NULL OR expires_at > ?)",
+            (code, now_iso()),
+        ).fetchone()
         if not inv:
             return "invite_not_found"
         if db.execute("SELECT 1 FROM users WHERE telegram_id=?", (telegram_id,)).fetchone():
@@ -510,11 +534,11 @@ async def api_redeem_invite(request: Request, _: bool = Depends(_check_internal)
         return ("ok", uid, login)
 
     result = await loop.run_in_executor(None, _redeem)
-    status = result[0]
-    if status == "invite_not_found":
-        return JSONResponse({"ok": False, "error": "invite_not_found"}, status_code=404)
-    if status == "telegram_already_linked":
-        return JSONResponse({"ok": False, "error": "telegram_already_linked"}, status_code=409)
+    if isinstance(result, str):
+        if result == "invite_not_found":
+            return JSONResponse({"ok": False, "error": "invite_not_found"}, status_code=404)
+        if result == "telegram_already_linked":
+            return JSONResponse({"ok": False, "error": "telegram_already_linked"}, status_code=409)
     _, uid, login = result
     await _awrite_auth(telegram_id, uid)
     return JSONResponse({"ok": True, "uid": uid, "login": login, "kind": "register"})
@@ -551,6 +575,134 @@ def api_usage(request: Request, user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
     return JSONResponse(quota.get_usage(user))
+
+
+# --- Files UI (spec 10) ---
+
+def _file_service_error_response(e: "Exception") -> JSONResponse:
+    """Convert FileServiceError into a JSON response with the right HTTP code."""
+    from .file_service import FileServiceError
+    assert isinstance(e, FileServiceError)
+    return JSONResponse({"ok": False, "error": e.message}, status_code=e.code)
+
+
+@app.get("/files", response_class=HTMLResponse)
+async def files_page(request: Request, path: str = "", user: str | None = Depends(current_user)):
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    from . import file_service
+    try:
+        listing = await asyncio.to_thread(file_service.list_files, user, path)
+    except file_service.FileServiceError as e:
+        # Render an empty listing with the error so the user can navigate back.
+        listing = {"current_path": path, "breadcrumbs": [{"name": "files", "path": ""}],
+                   "directories": [], "files": [], "total_size": 0,
+                   "total_size_human": "0 B", "storage_limit": file_service.USER_STORAGE_QUOTA_BYTES,
+                   "storage_limit_human": file_service._human_size(file_service.USER_STORAGE_QUOTA_BYTES),
+                   "error": e.message}
+    u = await asyncio.to_thread(
+        lambda: get_db().execute("SELECT login, name FROM users WHERE uid=?", (user,)).fetchone()
+    )
+    return _render(request, "files.html", user={"uid": user, **(dict(u) if u else {"login": "?", "name": "?"})},
+                   listing=listing)
+
+
+@app.get("/api/files")
+async def api_files_list(path: str = "", user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    from . import file_service
+    try:
+        listing = await asyncio.to_thread(file_service.list_files, user, path)
+    except file_service.FileServiceError as e:
+        return _file_service_error_response(e)
+    return JSONResponse(listing)
+
+
+@app.post("/api/files/mkdir")
+async def api_files_mkdir(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    body = await request.json()
+    path = (body.get("path") or "").strip()
+    name = (body.get("name") or "").strip()
+    from . import file_service
+    try:
+        result = await asyncio.to_thread(file_service.create_folder, user, path, name)
+    except file_service.FileServiceError as e:
+        return _file_service_error_response(e)
+    return JSONResponse({"ok": True, "folder": result})
+
+
+@app.post("/api/files/upload")
+async def api_files_upload(
+    request: Request,
+    path: str = Form(""),
+    file: UploadFile = File(...),
+    user: str | None = Depends(current_user),
+):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    content = await file.read()
+    from . import file_service
+    try:
+        result = await asyncio.to_thread(
+            file_service.save_upload, user, path, file.filename or "upload", content
+        )
+    except file_service.FileServiceError as e:
+        return _file_service_error_response(e)
+    return JSONResponse({"ok": True, "file": result})
+
+
+@app.get("/api/files/download")
+async def api_files_download(path: str, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    from . import file_service
+    try:
+        target = await asyncio.to_thread(file_service.resolve_for_download, user, path)
+    except file_service.FileServiceError as e:
+        return _file_service_error_response(e)
+    # FileResponse streams the file with a sane default filename.
+    return FileResponse(
+        path=str(target),
+        filename=target.name,
+        media_type="application/octet-stream",
+    )
+
+
+@app.post("/api/files/delete")
+async def api_files_delete(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    body = await request.json()
+    path = (body.get("path") or "").strip()
+    from . import file_service
+    try:
+        result = await asyncio.to_thread(file_service.delete_path, user, path)
+    except file_service.FileServiceError as e:
+        return _file_service_error_response(e)
+    return JSONResponse({"ok": True, **result})
+
+
+@app.post("/api/files/write-text")
+async def api_files_write_text(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    body = await request.json()
+    path = (body.get("path") or "").strip()
+    name = (body.get("name") or "").strip()
+    content = body.get("content") or ""
+    from . import file_service
+    try:
+        result = await asyncio.to_thread(file_service.write_text_file, user, path, name, content)
+    except file_service.FileServiceError as e:
+        return _file_service_error_response(e)
+    return JSONResponse({"ok": True, "file": result})
 
 
 @app.post("/api/chat")

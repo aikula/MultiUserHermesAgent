@@ -15,6 +15,21 @@
     return meta ? meta.getAttribute("content") : "";
   }
 
+  // Optional prefill from ?prefill=... query string (e.g. from Files "Ask agent")
+  (function applyPrefill() {
+    const params = new URLSearchParams(window.location.search);
+    const prefill = params.get("prefill");
+    if (prefill) {
+      input.value = prefill;
+      // Strip the query so a refresh doesn't keep reapplying
+      const url = new URL(window.location.href);
+      url.searchParams.delete("prefill");
+      window.history.replaceState({}, "", url.pathname + (url.search || "") + url.hash);
+      // Focus so the user can just press Enter
+      setTimeout(() => input.focus(), 0);
+    }
+  })();
+
   function escapeHtml(s) {
     return s.replace(/[&<>"']/g, c => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",

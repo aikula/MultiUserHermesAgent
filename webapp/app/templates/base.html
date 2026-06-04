@@ -13,6 +13,8 @@
     <a class="brand" href="{{ chat_prefix }}/">Hermes</a>
     <nav>
       {% if request.cookies.session %}
+        <a href="{{ chat_prefix }}/">Чат</a>
+        <a href="{{ chat_prefix }}/files">Файлы</a>
         <a href="{{ chat_prefix }}/profile">Профиль</a>
         <a href="{{ chat_prefix }}/logout">Выйти</a>
       {% else %}
