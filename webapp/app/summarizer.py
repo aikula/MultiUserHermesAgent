@@ -24,7 +24,7 @@ def _user_memory_path(uid: str) -> Path:
     return HERMES_USERS_DIR / uid / "memory.md"
 
 
-def _unsummarized_count(uid: str) -> int:
+def _unsummarized_count_sync(uid: str) -> int:
     db = get_db()
     row = db.execute(
         "SELECT COALESCE(last_summarized_id, 0) FROM users WHERE uid=?", (uid,)
@@ -37,8 +37,14 @@ def _unsummarized_count(uid: str) -> int:
     return max(0, max_id - last_id)
 
 
-def _should_summarize(uid: str) -> bool:
-    return _unsummarized_count(uid) >= SUMMARY_THRESHOLD
+async def _unsummarized_count(uid: str) -> int:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _unsummarized_count_sync, uid)
+
+
+async def _should_summarize(uid: str) -> bool:
+    count = await _unsummarized_count(uid)
+    return count >= SUMMARY_THRESHOLD
 
 
 SUMMARY_PROMPT = """\
@@ -98,27 +104,35 @@ async def _call_hermes_summary(messages: list[dict]) -> str:
 
 
 async def _do_summarize(uid: str) -> bool:
-    db = get_db()
-    user = db.execute("SELECT login, name FROM users WHERE uid=?", (uid,)).fetchone()
-    if not user:
-        return False
+    loop = asyncio.get_running_loop()
 
-    row = db.execute(
-        "SELECT COALESCE(last_summarized_id, 0) FROM users WHERE uid=?", (uid,)
-    ).fetchone()
-    last_id = (row[0] or 0) if row else 0
+    def _load_data():
+        db = get_db()
+        user = db.execute("SELECT login, name FROM users WHERE uid=?", (uid,)).fetchone()
+        if not user:
+            return None, 0, []
+        row = db.execute(
+            "SELECT COALESCE(last_summarized_id, 0) FROM users WHERE uid=?", (uid,)
+        ).fetchone()
+        last_id = (row[0] or 0) if row else 0
+        rows = db.execute(
+            "SELECT id, role, content, created_at FROM chat_history "
+            "WHERE uid=? AND id > ? AND role IN ('user', 'assistant') "
+            "ORDER BY id ASC LIMIT ?",
+            (uid, last_id, SUMMARY_MAX_HISTORY),
+        ).fetchall()
+        return user, last_id, rows
 
-    rows = db.execute(
-        "SELECT id, role, content, created_at FROM chat_history "
-        "WHERE uid=? AND id > ? AND role IN ('user', 'assistant') "
-        "ORDER BY id ASC LIMIT ?",
-        (uid, last_id, SUMMARY_MAX_HISTORY),
-    ).fetchall()
-    if not rows:
+    user, last_id, rows = await loop.run_in_executor(None, _load_data)
+    if not user or not rows:
         return False
 
     mem_path = _user_memory_path(uid)
-    current_memory = mem_path.read_text(encoding="utf-8") if mem_path.exists() else ""
+
+    def _read_current_memory():
+        return mem_path.read_text(encoding="utf-8") if mem_path.exists() else ""
+
+    current_memory = await loop.run_in_executor(None, _read_current_memory)
 
     conv_lines: list[str] = []
     for r in rows:
@@ -149,13 +163,16 @@ async def _do_summarize(uid: str) -> bool:
     if not new_memory:
         return False
 
-    mem_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = mem_path.with_suffix(".md.tmp")
-    tmp.write_text(new_memory, encoding="utf-8")
-    tmp.rename(mem_path)
+    def _save_memory_and_update():
+        mem_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = mem_path.with_suffix(".md.tmp")
+        tmp.write_text(new_memory, encoding="utf-8")
+        tmp.rename(mem_path)
+        max_id = rows[-1]["id"]
+        db = get_db()
+        db.execute("UPDATE users SET last_summarized_id=? WHERE uid=?", (max_id, uid))
 
-    max_id = rows[-1]["id"]
-    db.execute("UPDATE users SET last_summarized_id=? WHERE uid=?", (max_id, uid))
+    await loop.run_in_executor(None, _save_memory_and_update)
 
     logging.info(
         "summarized uid=%s: +%d msgs, memory=%d bytes",
@@ -170,13 +187,13 @@ async def maybe_summarize(uid: str) -> None:
     if lock.locked():
         return
     async with lock:
-        if not _should_summarize(uid):
+        if not await _should_summarize(uid):
             return
         try:
             await _do_summarize(uid)
         except Exception:
             logging.exception("summarize failed for uid=%s", uid)
-        if _should_summarize(uid):
+        if await _should_summarize(uid):
             asyncio.create_task(maybe_summarize(uid))
 
 

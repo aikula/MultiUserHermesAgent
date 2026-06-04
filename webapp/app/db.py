@@ -1,8 +1,11 @@
 """Shared DB helpers and constants."""
+import asyncio
 import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+import aiosqlite
 
 USERS_DB = Path(os.environ.get("USERS_DB_PATH", "/opt/app/data/users.db"))
 HERMES_USERS_DIR = Path(os.environ.get("HERMES_USERS_DIR", "/opt/hermes-users"))
@@ -17,6 +20,19 @@ def get_db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+async def aget_db() -> aiosqlite.Connection:
+    db = await aiosqlite.connect(str(USERS_DB))
+    db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA foreign_keys=ON")
+    return db
+
+
+async def ainit_db() -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, init_db)
 
 
 def now_iso() -> str:

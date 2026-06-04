@@ -1,4 +1,5 @@
 """Chat: per-user context, Hermes API calls, history."""
+import asyncio
 import os
 
 import httpx
@@ -147,3 +148,20 @@ async def call_hermes(messages: list[dict], uid: str = "") -> dict:
         "total_tokens": usage.get("total_tokens", 0),
         "finish_reason": choice.get("finish_reason"),
     }
+
+
+# --- Async wrappers for sync functions ---
+
+async def asave_message(uid: str, channel: str, role: str, content: str, tokens: int = 0) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, save_message, uid, channel, role, content, tokens)
+
+
+async def aget_history(uid: str, limit: int = MAX_HISTORY) -> list[dict]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, get_history, uid, limit)
+
+
+async def abuild_system_prompt(uid: str) -> str:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, build_system_prompt, uid)

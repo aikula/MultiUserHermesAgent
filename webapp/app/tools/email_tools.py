@@ -10,7 +10,7 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 
-from .db import get_db
+from ..db import get_db
 from ..secrets_store import decrypt
 
 

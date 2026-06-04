@@ -3,6 +3,7 @@
 Single-confirmation UX for external actions (email, calendar, etc.).
 Implements the approval policy from docs/specs/02_action_approval_policy.md.
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -94,6 +95,16 @@ def create_intent(uid: str, action_type: str, payload: dict) -> dict:
             "created_at": created, "expires_at": expires}
 
 
+def get_intent_by_id_for_user(intent_id: str, uid: str) -> dict | None:
+    """Get a specific intent by id, verifying it belongs to the user."""
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM action_intents WHERE id=? AND uid=?",
+        (intent_id, uid),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def get_pending_intent(uid: str, action_type: str | None = None) -> dict | None:
     """Get the latest pending intent for a user, optionally filtered by action_type."""
     db = get_db()
@@ -154,6 +165,38 @@ def reject_intent(intent_id: str) -> bool:
                (now_iso(), intent_id))
     db.commit()
     return True
+
+
+# --- Async wrappers ---
+
+async def acreate_intent(uid: str, action_type: str, payload: dict) -> dict:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, create_intent, uid, action_type, payload)
+
+
+async def aget_intent_by_id_for_user(intent_id: str, uid: str) -> dict | None:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, get_intent_by_id_for_user, intent_id, uid)
+
+
+async def aget_pending_intent(uid: str, action_type: str | None = None) -> dict | None:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, get_pending_intent, uid, action_type)
+
+
+async def aapprove_intent(intent_id: str) -> bool:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, approve_intent, intent_id)
+
+
+async def aexecute_intent(intent_id: str, result_json: str | None = None, error: str | None = None) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, execute_intent, intent_id, result_json, error)
+
+
+async def areject_intent(intent_id: str) -> bool:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, reject_intent, intent_id)
 
 
 def format_intent_payload(intent: dict) -> str:
