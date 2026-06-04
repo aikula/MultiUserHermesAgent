@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 
+from .approval import REVIEW_ACTIONS
 from .chat import build_system_prompt, get_history, save_message
 from .db import HERMES_USERS_DIR, HERMES_SHARED_DIR
 from .quota import check_quota, record as quota_record
@@ -25,9 +26,6 @@ KNOWN_COMMANDS = {"/start", "/login", "/help", "/whoami", "/files", "/unlink", "
 GATEWAY_CONFUSED_PATTERNS = re.compile(
     r"(?i)(no main session|create one via|web ui first|/new or web|main session not found)"
 )
-
-# Action types that require approval before execution
-REVIEW_ACTIONS = {"email_send", "calendar_create", "calendar_update", "telegram_send_external", "file_share_external"}
 
 
 def _strip_intent_block(content: str) -> str:

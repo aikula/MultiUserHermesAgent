@@ -184,3 +184,112 @@ class TestInviteCodeExpiry:
                 assert r.json()["error"] == "invite_not_found"
 
         asyncio.run(_test())
+
+
+class TestEmailPortValidation:
+    """POST /api/profile/email — port type validation (500→400 fix)."""
+
+    def _make_authed_session(self, client, db):
+        """Create a user, return (session_token, csrf_token)."""
+        import bcrypt
+        from app.db import now_iso
+        from app.main import make_token, generate_csrf_token
+        uid = "port_" + secrets.token_urlsafe(6)
+        login = f"port_{secrets.token_urlsafe(4)}"
+        pw_hash = bcrypt.hashpw(b"testpassword123", bcrypt.gensalt()).decode()
+        db.execute(
+            "INSERT INTO users (uid, login, name, password_hash, quota_remaining, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (uid, login, "Port Test", pw_hash, 2000000, now_iso()),
+        )
+        db.commit()
+        session_token = make_token(uid)
+        csrf_token = generate_csrf_token(session_token)
+        client.cookies.set("session", session_token)
+        return session_token, csrf_token
+
+    def test_string_port_returns_400(self, client, db):
+        async def _test():
+            async with client as c:
+                _, csrf = self._make_authed_session(c, db)
+                r = await c.post(
+                    "/api/profile/email",
+                    json={
+                        "imap_host": "imap.test.com", "imap_port": "abc",
+                        "smtp_host": "smtp.test.com", "smtp_port": 587,
+                        "email_login": "x@y.com", "email_password": "pwd",
+                    },
+                    headers={"X-CSRF-Token": csrf},
+                )
+                assert r.status_code == 400, f"got {r.status_code}: {r.text}"
+                assert "port" in r.text.lower()
+
+        asyncio.run(_test())
+
+    def test_negative_port_returns_400(self, client, db):
+        async def _test():
+            async with client as c:
+                _, csrf = self._make_authed_session(c, db)
+                r = await c.post(
+                    "/api/profile/email",
+                    json={
+                        "imap_host": "imap.test.com", "imap_port": -1,
+                        "smtp_host": "smtp.test.com", "smtp_port": 587,
+                        "email_login": "x@y.com", "email_password": "pwd",
+                    },
+                    headers={"X-CSRF-Token": csrf},
+                )
+                assert r.status_code == 400, f"got {r.status_code}: {r.text}"
+
+        asyncio.run(_test())
+
+    def test_port_above_65535_returns_400(self, client, db):
+        async def _test():
+            async with client as c:
+                _, csrf = self._make_authed_session(c, db)
+                r = await c.post(
+                    "/api/profile/email",
+                    json={
+                        "imap_host": "imap.test.com", "imap_port": 993,
+                        "smtp_host": "smtp.test.com", "smtp_port": 70000,
+                        "email_login": "x@y.com", "email_password": "pwd",
+                    },
+                    headers={"X-CSRF-Token": csrf},
+                )
+                assert r.status_code == 400, f"got {r.status_code}: {r.text}"
+
+        asyncio.run(_test())
+
+    def test_valid_ports_succeed(self, client, db):
+        async def _test():
+            async with client as c:
+                _, csrf = self._make_authed_session(c, db)
+                r = await c.post(
+                    "/api/profile/email",
+                    json={
+                        "imap_host": "imap.test.com", "imap_port": 993,
+                        "smtp_host": "smtp.test.com", "smtp_port": 587,
+                        "email_login": "x@y.com", "email_password": "pwd",
+                    },
+                    headers={"X-CSRF-Token": csrf},
+                )
+                assert r.status_code == 200, f"got {r.status_code}: {r.text}"
+                assert r.json()["ok"] is True
+
+        asyncio.run(_test())
+
+
+class TestReviewActionsSync:
+    """REVIEW_ACTIONS must be a single source of truth (approval.py)."""
+
+    def test_relay_imports_from_approval(self):
+        """relay.REVIEW_ACTIONS IS approval.REVIEW_ACTIONS (same object after import)."""
+        from app.approval import REVIEW_ACTIONS as APPROVAL_ACTIONS
+        from app.relay import REVIEW_ACTIONS as RELAY_ACTIONS
+        assert RELAY_ACTIONS is APPROVAL_ACTIONS, "relay uses its own copy!"
+
+    def test_same_set(self):
+        """Values match even if identity doesn't."""
+        from app.approval import REVIEW_ACTIONS as APPROVAL_ACTIONS
+        from app.relay import REVIEW_ACTIONS as RELAY_ACTIONS
+        assert RELAY_ACTIONS == APPROVAL_ACTIONS

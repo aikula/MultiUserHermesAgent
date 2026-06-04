@@ -385,6 +385,15 @@ async def api_profile_email(request: Request, user: str | None = Depends(current
     if not all([imap_host, smtp_host, email_login, email_password]):
         raise HTTPException(400, "all fields required")
 
+    # Validate ports are valid integers
+    try:
+        imap_port = int(imap_port)
+        smtp_port = int(smtp_port)
+        if imap_port < 1 or imap_port > 65535 or smtp_port < 1 or smtp_port > 65535:
+            raise HTTPException(400, "port must be 1-65535")
+    except (ValueError, TypeError):
+        raise HTTPException(400, "port must be a number")
+
     # Encrypt password before storing (CPU-bound PBKDF2)
     loop = asyncio.get_running_loop()
     encrypted_password = await loop.run_in_executor(None, encrypt, email_password, user)
@@ -392,7 +401,7 @@ async def api_profile_email(request: Request, user: str | None = Depends(current
     await loop.run_in_executor(None, lambda: get_db().execute(
         "UPDATE users SET email_imap_host=?, email_imap_port=?, email_smtp_host=?, "
         "email_smtp_port=?, email_login=?, email_password=? WHERE uid=?",
-        (imap_host, int(imap_port), smtp_host, int(smtp_port), email_login, encrypted_password, user),
+        (imap_host, imap_port, smtp_host, smtp_port, email_login, encrypted_password, user),
     ))
     return JSONResponse({"ok": True})
 
