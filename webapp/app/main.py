@@ -61,7 +61,7 @@ logging.basicConfig(
 from . import chat  # noqa: E402
 from . import quota  # noqa: E402
 from . import summarizer  # noqa: E402
-from .db import HERMES_SHARED_DIR, HERMES_USERS_DIR, SOUL_TEMPLATE_PATH_DEFAULT, USERS_DB, get_db, init_db, now_iso  # noqa: E402
+from .db import HERMES_SHARED_DIR, HERMES_USERS_DIR, SOUL_TEMPLATE_PATH_DEFAULT, USERS_DB, get_db, ainit_db, now_iso  # noqa: E402
 
 
 def _write_auth(telegram_id: int, uid: str) -> None:
@@ -74,6 +74,11 @@ def _write_auth(telegram_id: int, uid: str) -> None:
     data[str(telegram_id)] = uid
     path.write_text(json.dumps(data, indent=2, sort_keys=True))
 
+
+async def _awrite_auth(telegram_id: int, uid: str) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _write_auth, telegram_id, uid)
+
 SOUL_TEMPLATE_PATH = Path(os.environ.get("SOUL_TEMPLATE_PATH", str(SOUL_TEMPLATE_PATH_DEFAULT)))
 WELCOME_QUOTA = int(os.environ.get("WELCOME_QUOTA", "2000000"))
 JWT_SECRET = os.environ.get("JWT_SECRET")
@@ -81,6 +86,8 @@ JWT_ALGO = "HS256"
 JWT_TTL_HOURS = 24 * 30
 INTERNAL_SECRET = os.environ.get("WEBAPP_INTERNAL_SECRET", "")
 TELEGRAM_LINK_TTL = int(os.environ.get("TELEGRAM_LINK_TTL", "600"))
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
+COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "lax").lower()
 
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET env var is required")
@@ -166,18 +173,20 @@ async def prefix_redirects(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup() -> None:
-    USERS_DB.parent.mkdir(parents=True, exist_ok=True)
-    HERMES_USERS_DIR.mkdir(parents=True, exist_ok=True)
-    HERMES_SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, lambda: USERS_DB.parent.mkdir(parents=True, exist_ok=True))
+    await loop.run_in_executor(None, lambda: HERMES_USERS_DIR.mkdir(parents=True, exist_ok=True))
+    await loop.run_in_executor(None, lambda: HERMES_SHARED_DIR.mkdir(parents=True, exist_ok=True))
     auth_path = HERMES_SHARED_DIR / "auth.json"
-    auth_path.touch(exist_ok=True)
-    init_db()
+    await loop.run_in_executor(None, lambda: auth_path.touch(exist_ok=True))
+    await ainit_db()
 
     bootstrap = os.environ.get("INVITE_CODE_BOOTSTRAP")
     if bootstrap:
-        db = get_db()
-        if not db.execute("SELECT 1 FROM invite_codes WHERE code=?", (bootstrap,)).fetchone():
-            db.execute("INSERT INTO invite_codes (code, created_at) VALUES (?, ?)", (bootstrap, now_iso()))
+        db = await loop.run_in_executor(None, get_db)
+        found = await loop.run_in_executor(None, lambda: db.execute("SELECT 1 FROM invite_codes WHERE code=?", (bootstrap,)).fetchone())
+        if not found:
+            await loop.run_in_executor(None, lambda: db.execute("INSERT INTO invite_codes (code, created_at) VALUES (?, ?)", (bootstrap, now_iso())))
             print(f"[bootstrap] invite code created: {bootstrap}", flush=True)
 
     # Start Telegram relay (if configured)
@@ -200,8 +209,9 @@ def _render(request: Request, name: str, **ctx) -> HTMLResponse:
 async def index(request: Request, user: str | None = Depends(current_user)):
     if not user:
         return RedirectResponse("/login", status_code=302)
-    db = get_db()
-    u = db.execute("SELECT login, name FROM users WHERE uid=?", (user,)).fetchone()
+    u = await asyncio.to_thread(
+        lambda: get_db().execute("SELECT login, name FROM users WHERE uid=?", (user,)).fetchone()
+    )
     return _render(request, "chat.html", user={"uid": user, **(dict(u) if u else {"login": "?", "name": "?"})})
 
 
@@ -248,7 +258,7 @@ def register_submit(
     (user_dir / "memory.md").touch()
 
     resp = RedirectResponse("/profile", status_code=303)
-    resp.set_cookie("session", make_token(uid), httponly=True, samesite="lax", secure=True, max_age=JWT_TTL_HOURS * 3600)
+    resp.set_cookie("session", make_token(uid), httponly=True, samesite=COOKIE_SAMESITE, secure=COOKIE_SECURE, max_age=JWT_TTL_HOURS * 3600)
     return resp
 
 
@@ -272,7 +282,7 @@ def login_submit(request: Request, login: str = Form(...), password: str = Form(
     if not row or not verify_password(password, row["password_hash"]):
         return _render(request, "login.html", error="Неверный логин или пароль", login=login, status_code=200)
     resp = RedirectResponse("/profile", status_code=303)
-    resp.set_cookie("session", make_token(row["uid"]), httponly=True, samesite="lax", secure=True, max_age=JWT_TTL_HOURS * 3600)
+    resp.set_cookie("session", make_token(row["uid"]), httponly=True, samesite=COOKIE_SAMESITE, secure=COOKIE_SECURE, max_age=JWT_TTL_HOURS * 3600)
     return resp
 
 
@@ -324,8 +334,10 @@ async def api_profile_update(request: Request, user: str | None = Depends(curren
     new_password = (body.get("new_password") or "").strip()
     soul_md = body.get("soul_md")
 
-    db = get_db()
-    row = db.execute("SELECT password_hash FROM users WHERE uid=?", (user,)).fetchone()
+    loop = asyncio.get_running_loop()
+    row = await loop.run_in_executor(None, lambda: get_db().execute("SELECT password_hash FROM users WHERE uid=?", (user,)).fetchone())
+
+    changed = ""
 
     if new_password:
         if not current_password:
@@ -334,18 +346,17 @@ async def api_profile_update(request: Request, user: str | None = Depends(curren
             raise HTTPException(400, "new password too short (min 10 chars)")
         if not verify_password(current_password, row["password_hash"]):
             raise HTTPException(403, "current password is wrong")
-        db.execute("UPDATE users SET password_hash=? WHERE uid=?", (hash_password(new_password), user))
+        pwhash = await loop.run_in_executor(None, hash_password, new_password)
+        await loop.run_in_executor(None, lambda: get_db().execute("UPDATE users SET password_hash=? WHERE uid=?", (pwhash, user)))
         changed = "password"
-    else:
-        changed = ""
 
     if name:
-        db.execute("UPDATE users SET name=? WHERE uid=?", (name, user))
+        await loop.run_in_executor(None, lambda: get_db().execute("UPDATE users SET name=? WHERE uid=?", (name, user)))
         changed = (changed + ", " if changed else "") + "name"
 
     if soul_md is not None:
         soul_path = HERMES_USERS_DIR / user / "SOUL.md"
-        soul_path.write_text(soul_md)
+        await loop.run_in_executor(None, lambda: soul_path.write_text(soul_md))
         changed = (changed + ", " if changed else "") + "SOUL.md"
 
     if not changed:
@@ -370,15 +381,15 @@ async def api_profile_email(request: Request, user: str | None = Depends(current
     if not all([imap_host, smtp_host, email_login, email_password]):
         raise HTTPException(400, "all fields required")
 
-    # Encrypt password before storing
-    encrypted_password = encrypt(email_password, user)
+    # Encrypt password before storing (CPU-bound PBKDF2)
+    loop = asyncio.get_running_loop()
+    encrypted_password = await loop.run_in_executor(None, encrypt, email_password, user)
 
-    db = get_db()
-    db.execute(
+    await loop.run_in_executor(None, lambda: get_db().execute(
         "UPDATE users SET email_imap_host=?, email_imap_port=?, email_smtp_host=?, "
         "email_smtp_port=?, email_login=?, email_password=? WHERE uid=?",
         (imap_host, int(imap_port), smtp_host, int(smtp_port), email_login, encrypted_password, user),
-    )
+    ))
     return JSONResponse({"ok": True})
 
 
@@ -387,12 +398,11 @@ async def api_profile_email_clear(request: Request, user: str | None = Depends(c
     if not user:
         raise HTTPException(401, "not authenticated")
     require_csrf(request)
-    db = get_db()
-    db.execute(
+    await asyncio.to_thread(lambda: get_db().execute(
         "UPDATE users SET email_imap_host=NULL, email_imap_port=993, email_smtp_host=NULL, "
         "email_smtp_port=587, email_login=NULL, email_password=NULL WHERE uid=?",
         (user,),
-    )
+    ))
     return JSONResponse({"ok": True})
 
 
@@ -422,7 +432,7 @@ def api_generate_link(request: Request, user: str | None = Depends(current_user)
 def _check_internal(x_internal_secret: str | None = Header(default=None)):
     if not INTERNAL_SECRET:
         raise HTTPException(503, "internal secret not configured")
-    if x_internal_secret != INTERNAL_SECRET:
+    if not x_internal_secret or not hmac.compare_digest(x_internal_secret, INTERNAL_SECRET):
         raise HTTPException(403, "bad internal secret")
     return True
 
@@ -435,16 +445,26 @@ async def api_consume_link_code(request: Request, _: bool = Depends(_check_inter
     telegram_id = body.get("telegram_id")
     if not code or not isinstance(telegram_id, int):
         raise HTTPException(400, "code and telegram_id required")
-    db = get_db()
-    row = db.execute("SELECT uid, expires_at, used_at FROM telegram_links WHERE code=?", (code,)).fetchone()
-    if not row or row["used_at"]:
+    loop = asyncio.get_running_loop()
+
+    def _consume():
+        db = get_db()
+        row = db.execute("SELECT uid, expires_at, used_at FROM telegram_links WHERE code=?", (code,)).fetchone()
+        if not row or row["used_at"]:
+            return None, "not_found"
+        if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+            return None, "expired"
+        uid = row["uid"]
+        db.execute("UPDATE telegram_links SET used_at=? WHERE code=?", (now_iso(), code))
+        db.execute("UPDATE users SET telegram_id=? WHERE uid=?", (telegram_id, uid))
+        return uid, None
+
+    uid, err = await loop.run_in_executor(None, _consume)
+    if err == "not_found":
         return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
-    if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+    if err == "expired":
         return JSONResponse({"ok": False, "error": "expired"}, status_code=410)
-    uid = row["uid"]
-    db.execute("UPDATE telegram_links SET used_at=? WHERE code=?", (now_iso(), code))
-    db.execute("UPDATE users SET telegram_id=? WHERE uid=?", (telegram_id, uid))
-    _write_auth(telegram_id, uid)
+    await _awrite_auth(telegram_id, uid)
     return JSONResponse({"ok": True, "uid": uid, "kind": "link"})
 
 
@@ -457,34 +477,66 @@ async def api_redeem_invite(request: Request, _: bool = Depends(_check_internal)
     name = (body.get("name") or "").strip() or None
     if not code or not isinstance(telegram_id, int):
         raise HTTPException(400, "code and telegram_id required")
-    db = get_db()
-    inv = db.execute("SELECT 1 FROM invite_codes WHERE code=? AND used_by IS NULL", (code,)).fetchone()
-    if not inv:
+    loop = asyncio.get_running_loop()
+
+    def _redeem():
+        db = get_db()
+        inv = db.execute("SELECT 1 FROM invite_codes WHERE code=? AND used_by IS NULL", (code,)).fetchone()
+        if not inv:
+            return "invite_not_found"
+        if db.execute("SELECT 1 FROM users WHERE telegram_id=?", (telegram_id,)).fetchone():
+            return "telegram_already_linked"
+        uid = secrets.token_urlsafe(9)
+        login = f"tg_{telegram_id}"
+        n = 0
+        while db.execute("SELECT 1 FROM users WHERE login=?", (login,)).fetchone():
+            n += 1
+            login = f"tg_{telegram_id}_{n}"
+        display = name or f"TG_{telegram_id}"
+        pwhash = hash_password(secrets.token_urlsafe(16))
+        db.execute(
+            "INSERT INTO users (uid, login, name, password_hash, telegram_id, quota_remaining, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (uid, login, display, pwhash, telegram_id, WELCOME_QUOTA, now_iso()),
+        )
+        db.execute("UPDATE invite_codes SET used_by=? WHERE code=?", (uid, code))
+        user_dir = HERMES_USERS_DIR / uid
+        user_dir.mkdir(parents=True, exist_ok=True)
+        if SOUL_TEMPLATE_PATH.exists():
+            (user_dir / "SOUL.md").write_text(SOUL_TEMPLATE_PATH.read_text().format(name=display, login=login))
+        else:
+            (user_dir / "SOUL.md").write_text(f"# {display}\n\nЛичный помощник.\n")
+        (user_dir / "memory.md").touch()
+        return ("ok", uid, login)
+
+    result = await loop.run_in_executor(None, _redeem)
+    status = result[0]
+    if status == "invite_not_found":
         return JSONResponse({"ok": False, "error": "invite_not_found"}, status_code=404)
-    if db.execute("SELECT 1 FROM users WHERE telegram_id=?", (telegram_id,)).fetchone():
+    if status == "telegram_already_linked":
         return JSONResponse({"ok": False, "error": "telegram_already_linked"}, status_code=409)
-    uid = secrets.token_urlsafe(9)
-    login = f"tg_{telegram_id}"
-    n = 0
-    while db.execute("SELECT 1 FROM users WHERE login=?", (login,)).fetchone():
-        n += 1
-        login = f"tg_{telegram_id}_{n}"
-    display = name or f"TG_{telegram_id}"
-    db.execute(
-        "INSERT INTO users (uid, login, name, password_hash, telegram_id, quota_remaining, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (uid, login, display, hash_password(secrets.token_urlsafe(16)), telegram_id, WELCOME_QUOTA, now_iso()),
-    )
-    db.execute("UPDATE invite_codes SET used_by=? WHERE code=?", (uid, code))
-    user_dir = HERMES_USERS_DIR / uid
-    user_dir.mkdir(parents=True, exist_ok=True)
-    if SOUL_TEMPLATE_PATH.exists():
-        (user_dir / "SOUL.md").write_text(SOUL_TEMPLATE_PATH.read_text().format(name=display, login=login))
-    else:
-        (user_dir / "SOUL.md").write_text(f"# {display}\n\nЛичный помощник.\n")
-    (user_dir / "memory.md").touch()
-    _write_auth(telegram_id, uid)
+    _, uid, login = result
+    await _awrite_auth(telegram_id, uid)
     return JSONResponse({"ok": True, "uid": uid, "login": login, "kind": "register"})
+
+
+@app.post("/api/telegram/send")
+async def api_telegram_send(request: Request, _: bool = Depends(_check_internal)):
+    """Gateway вызывает для отправки сообщений через webapp relay.
+    Тело: {"chat_id": int, "text": str, "parse_mode": str?}
+    """
+    body = await request.json()
+    chat_id = body.get("chat_id")
+    text = (body.get("text") or "").strip()
+    parse_mode = body.get("parse_mode")
+    if not isinstance(chat_id, int) or not text:
+        raise HTTPException(400, "chat_id (int) and text (str) required")
+    try:
+        from .relay import send_message
+        await send_message(chat_id, text, parse_mode=parse_mode)
+        return JSONResponse({"ok": True})
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
 
 
 @app.get("/api/history")
@@ -516,14 +568,52 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
     if len(content) > 8000:
         raise HTTPException(400, "message too long (max 8000 chars)")
 
-    # Hard quota check — block before Hermes call
-    ok, err_msg = quota.check_quota(user)
+    loop = asyncio.get_running_loop()
+
+    # P1-1: Web chat confirmation pre-check — handle pending intent before Hermes
+    from .approval import (
+        get_pending_intent, is_confirmation, is_rejection,
+        approve_intent, execute_intent, reject_intent,
+        create_intent, REVIEW_ACTIONS,
+    )
+    pending = await loop.run_in_executor(None, get_pending_intent, user)
+    if pending:
+        if is_confirmation(content):
+            if await loop.run_in_executor(None, approve_intent, pending["id"]):
+                payload = json.loads(pending["payload_json"])
+                try:
+                    if pending["action_type"] == "email_send":
+                        from .tools.email_tools import send_email
+                        result = await loop.run_in_executor(
+                            None, send_email,
+                            user, payload["to"], payload["subject"], payload["body"],
+                        )
+                        await loop.run_in_executor(None, execute_intent, pending["id"], json.dumps(result), None)
+                        await loop.run_in_executor(None, chat.save_message, user, "web", "assistant",
+                                          f"✅ Письмо отправлено на {payload['to']}", 0)
+                        return JSONResponse({"ok": True, "intent_id": pending["id"], "result": result})
+                    else:
+                        await loop.run_in_executor(None, execute_intent, pending["id"], None, f"Unknown action: {pending['action_type']}")
+                        return JSONResponse({"ok": False, "error": f"Unknown action: {pending['action_type']}"})
+                except Exception as e:
+                    await loop.run_in_executor(None, execute_intent, pending["id"], None, str(e))
+                    return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            else:
+                return JSONResponse({"ok": False, "error": "Intent expired or already processed"}, status_code=410)
+        elif is_rejection(content):
+            await loop.run_in_executor(None, reject_intent, pending["id"])
+            await loop.run_in_executor(None, chat.save_message, user, "web", "assistant", "❌ Действие отменено.", 0)
+            return JSONResponse({"ok": True, "rejected": True})
+
+    # Hard quota check — block before Hermes call (with reserve)
+    ok, err_msg = await loop.run_in_executor(None, quota.check_quota, user, quota.MAX_TOKENS_PER_RESPONSE + quota.MIN_QUOTA_RESERVE_TOKENS)
     if not ok:
         raise HTTPException(429, err_msg)
 
-    chat.save_message(user, "web", "user", content, 0)
-    history = chat.get_history(user)
-    messages = [{"role": "system", "content": chat.build_system_prompt(user)}]
+    await loop.run_in_executor(None, chat.save_message, user, "web", "user", content, 0)
+    history = await loop.run_in_executor(None, chat.get_history, user)
+    system_prompt = await loop.run_in_executor(None, chat.build_system_prompt, user)
+    messages = [{"role": "system", "content": system_prompt}]
     for h in history:
         messages.append({"role": h["role"], "content": h["content"]})
 
@@ -532,17 +622,18 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
     except httpx.HTTPError as e:
         raise HTTPException(502, f"Hermes API error: {e}") from e
 
-    chat.save_message(user, "web", "assistant", result["content"], result["total_tokens"])
-    quota.record(user, "web", result["total_tokens"])
+    await loop.run_in_executor(None, chat.save_message, user, "web", "assistant", result["content"], result["total_tokens"])
+    await loop.run_in_executor(None, quota.record, user, "web", result["total_tokens"])
     asyncio.create_task(summarizer.maybe_summarize(user))
 
     # Check if response contains an action intent that needs approval
-    from .approval import create_intent, REVIEW_ACTIONS
     intent_data = _extract_intent_from_response(result["content"])
     if intent_data and intent_data["action_type"] in REVIEW_ACTIONS:
-        intent = create_intent(user, intent_data["action_type"], intent_data["payload"])
+        # P1-3: Strip action_intent JSON from user-visible content
+        clean_content = _strip_intent_block(result["content"])
+        intent = await loop.run_in_executor(None, create_intent, user, intent_data["action_type"], intent_data["payload"])
         return JSONResponse({
-            "content": result["content"],
+            "content": clean_content,
             "usage": {
                 "prompt_tokens": result["prompt_tokens"],
                 "completion_tokens": result["completion_tokens"],
@@ -586,6 +677,15 @@ def _extract_intent_from_response(content: str) -> dict | None:
     return None
 
 
+def _strip_intent_block(content: str) -> str:
+    """Remove action_intent JSON block from user-visible content."""
+    import re
+    cleaned = re.sub(r'\n?```action_intent\n.*?\n```\n?', '', content, flags=re.DOTALL).strip()
+    if not cleaned:
+        return "(действие подготовлено — смотри карточку подтверждения)"
+    return cleaned
+
+
 @app.post("/api/approve")
 async def api_approve(request: Request, user: str | None = Depends(current_user)):
     if not user:
@@ -599,35 +699,33 @@ async def api_approve(request: Request, user: str | None = Depends(current_user)
     if not intent_id:
         raise HTTPException(400, "intent_id required")
 
-    from .approval import approve_intent, get_pending_intent, execute_intent
+    loop = asyncio.get_running_loop()
+    from .approval import approve_intent, get_intent_by_id_for_user, execute_intent
     from .tools.email_tools import send_email
 
-    intent = get_pending_intent(user)
-    if not intent or intent["id"] != intent_id:
-        raise HTTPException(404, "pending intent not found or expired")
+    intent = await loop.run_in_executor(None, get_intent_by_id_for_user, intent_id, user)
+    if not intent:
+        raise HTTPException(404, "intent not found")
+    if intent["status"] != "pending_approval":
+        return JSONResponse({"ok": False, "error": f"Intent already {intent['status']}"}, status_code=200)
 
-    if not approve_intent(intent_id):
+    if not await loop.run_in_executor(None, approve_intent, intent_id):
         raise HTTPException(410, "intent expired or already processed")
 
     # Execute the action
     payload = json.loads(intent["payload_json"])
     try:
         if intent["action_type"] == "email_send":
-            result = send_email(
-                uid=user,
-                to=payload["to"],
-                subject=payload["subject"],
-                body=payload["body"],
-            )
-            execute_intent(intent_id, result_json=json.dumps(result))
-            chat.save_message(user, "web", "assistant",
+            result = await loop.run_in_executor(None, send_email, user, payload["to"], payload["subject"], payload["body"])
+            await loop.run_in_executor(None, execute_intent, intent_id, json.dumps(result), None)
+            await loop.run_in_executor(None, chat.save_message, user, "web", "assistant",
                               f"✅ Письмо отправлено на {payload['to']}", 0)
             return JSONResponse({"ok": True, "result": result})
         else:
-            execute_intent(intent_id, error=f"Unknown action type: {intent['action_type']}")
+            await loop.run_in_executor(None, execute_intent, intent_id, None, f"Unknown action type: {intent['action_type']}")
             raise HTTPException(400, f"Unknown action type: {intent['action_type']}")
     except Exception as e:
-        execute_intent(intent_id, error=str(e))
+        await loop.run_in_executor(None, execute_intent, intent_id, None, str(e))
         raise HTTPException(500, f"Execution failed: {e}") from e
 
 
@@ -644,9 +742,15 @@ async def api_reject(request: Request, user: str | None = Depends(current_user))
     if not intent_id:
         raise HTTPException(400, "intent_id required")
 
-    from .approval import reject_intent
-    reject_intent(intent_id)
-    chat.save_message(user, "web", "assistant", "❌ Действие отменено пользователем.", 0)
+    loop = asyncio.get_running_loop()
+    from .approval import reject_intent, get_intent_by_id_for_user
+    intent = await loop.run_in_executor(None, get_intent_by_id_for_user, intent_id, user)
+    if not intent:
+        raise HTTPException(404, "intent not found")
+    if intent["status"] != "pending_approval":
+        return JSONResponse({"ok": False, "error": f"Intent already {intent['status']}"}, status_code=200)
+    await loop.run_in_executor(None, reject_intent, intent_id)
+    await loop.run_in_executor(None, chat.save_message, user, "web", "assistant", "❌ Действие отменено пользователем.", 0)
     return JSONResponse({"ok": True})
 
 
@@ -654,11 +758,10 @@ async def api_reject(request: Request, user: str | None = Depends(current_user))
 async def api_pending_intents(user: str | None = Depends(current_user)):
     if not user:
         raise HTTPException(401, "not authenticated")
-    from .approval import get_pending_intent
-    intent = get_pending_intent(user)
+    from .approval import get_pending_intent, format_intent_payload
+    intent = await asyncio.to_thread(get_pending_intent, user)
     if not intent:
         return JSONResponse({"intent": None})
-    from .approval import format_intent_payload
     return JSONResponse({
         "intent": {
             "id": intent["id"],

@@ -19,6 +19,15 @@ from .quota import check_quota, record as quota_record
 REVIEW_ACTIONS = {"email_send", "calendar_create", "calendar_update", "telegram_send_external", "file_share_external"}
 
 
+def _strip_intent_block(content: str) -> str:
+    """Remove action_intent JSON block from user-visible content."""
+    import re
+    cleaned = re.sub(r'\n?```action_intent\n.*?\n```\n?', '', content, flags=re.DOTALL).strip()
+    if not cleaned:
+        return "(действие подготовлено — смотри карточку подтверждения)"
+    return cleaned
+
+
 def _extract_intent_from_response(content: str) -> dict | None:
     """Extract action intent from agent response if it follows the format."""
     match = re.search(r'```action_intent\n(.*?)\n```', content, re.DOTALL)
@@ -44,14 +53,10 @@ MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "20"))
 MAX_TG_MSG = 4000  # Telegram message limit is 4096
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB max file size
 
-# Allowed file extensions (safe documents + images only)
+# MVP allowed file extensions (per spec 01)
 ALLOWED_EXTENSIONS = {
-    # Documents
-    '.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.toml',
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    '.log', '.conf', '.cfg', '.ini',
-    # Images
-    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg',
+    '.txt', '.md', '.csv', '.json', '.pdf', '.docx', '.xlsx',
+    '.oga', '.ogg', '.mp3', '.wav', '.m4a', '.opus',
 }
 
 # Dangerous extensions that should NEVER be saved
@@ -88,6 +93,16 @@ def _save_auth(auth: dict) -> None:
     p.write_text(json.dumps(auth, indent=2, sort_keys=True))
 
 
+async def _aload_auth() -> dict:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _load_auth)
+
+
+async def _asave_auth(auth: dict) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _save_auth, auth)
+
+
 def _set_link(telegram_id: int, uid: str) -> None:
     auth = _load_auth()
     auth[str(telegram_id)] = uid
@@ -101,8 +116,24 @@ def _get_user_files_dir(uid: str) -> Path:
     return files_dir
 
 
+def _list_user_files(files_dir: Path) -> tuple[bool, list[str]]:
+    """Returns (exists, formatted list of files). For use in async executor."""
+    if not files_dir.exists():
+        return False, []
+    all_files = [f for f in sorted(files_dir.iterdir()) if f.is_file()]
+    if not all_files:
+        return True, []
+    result = []
+    for f in all_files:
+        size = f.stat().st_size // 1024
+        result.append(f"{f.name} ({size}KB)")
+    return True, result
+
+
 def _safe_filename(filename: str, files_dir: Path) -> str:
-    """Generate safe UUID-based filename, avoiding conflicts and dangerous extensions."""
+    """Generate safe UUID-based filename.
+    Rejects dangerous and unknown extensions per spec 01.
+    """
     import uuid
 
     # Remove path components
@@ -110,11 +141,13 @@ def _safe_filename(filename: str, files_dir: Path) -> str:
     if not name or name.startswith('.'):
         name = f"file_{int(time.time())}"
 
-    # Check extension — reject dangerous ones
+    # Check extension — reject dangerous and unknown ones
     ext = Path(name).suffix.lower()
     if ext in DANGEROUS_EXTENSIONS:
-        ext = ".txt"
-    elif ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(f"Extension {ext} is dangerous and not allowed")
+    if ext and ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(f"Extension {ext} is not in allowed list")
+    if not ext:
         ext = ".txt"
 
     # Use UUID to avoid conflicts and path traversal
@@ -168,10 +201,12 @@ class TelegramRelay:
         Returns (ok, message, saved_filename).
         """
         try:
-            # Pre-check: reject dangerous extensions before downloading
+            # Pre-check: reject dangerous and unknown extensions before downloading
             ext = Path(original_name).suffix.lower()
             if ext in DANGEROUS_EXTENSIONS:
                 return False, f"❌ Файл с расширением {ext} запрещён по соображениям безопасности.", None
+            if ext and ext not in ALLOWED_EXTENSIONS:
+                return False, f"❌ Расширение {ext} не поддерживается. Допустимые: {', '.join(sorted(ALLOWED_EXTENSIONS))}", None
 
             # Get file info from Telegram
             file_info = await self._tg("getFile", file_id=file_id)
@@ -190,10 +225,14 @@ class TelegramRelay:
             r.raise_for_status()
 
             # Save to user's folder (UUID-based safe filename)
-            files_dir = _get_user_files_dir(uid)
-            safe_name = _safe_filename(original_name, files_dir)
+            loop = asyncio.get_running_loop()
+            files_dir = await loop.run_in_executor(None, _get_user_files_dir, uid)
+            try:
+                safe_name = _safe_filename(original_name, files_dir)
+            except ValueError as e:
+                return False, f"❌ {e}", None
             target = files_dir / safe_name
-            target.write_bytes(r.content)
+            await loop.run_in_executor(None, target.write_bytes, r.content)
 
             log.info(f"File saved: {target} ({file_size} bytes)")
             return True, f"Файл сохранён: {safe_name}", safe_name
@@ -244,28 +283,29 @@ class TelegramRelay:
         return False, f"Ошибка: {r.status_code}", None
 
     async def process_chat_message(self, uid: str, chat_id: int, text: str):
+        loop = asyncio.get_running_loop()
         # Check for pending approval first
-        from .approval import get_pending_intent, is_confirmation, is_rejection, approve_intent, execute_intent, format_intent_payload
-        pending = get_pending_intent(uid)
+        from .approval import get_pending_intent, is_confirmation, is_rejection, format_intent_payload
+        pending = await loop.run_in_executor(None, get_pending_intent, uid)
 
         if pending and is_confirmation(text):
-            # Approve and execute
-            if approve_intent(pending["id"]):
+            from .approval import approve_intent, execute_intent
+            if await loop.run_in_executor(None, approve_intent, pending["id"]):
                 payload = json.loads(pending["payload_json"])
                 try:
                     if pending["action_type"] == "email_send":
                         from .tools.email_tools import send_email
-                        result = send_email(uid=uid, to=payload["to"], subject=payload["subject"], body=payload["body"])
-                        execute_intent(pending["id"], result_json=json.dumps(result))
-                        save_message(uid, "telegram", "assistant", f"✅ Письмо отправлено на {payload['to']}", 0)
+                        result = await loop.run_in_executor(None, send_email, uid, payload["to"], payload["subject"], payload["body"])
+                        await loop.run_in_executor(None, execute_intent, pending["id"], json.dumps(result), None)
+                        await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", f"✅ Письмо отправлено на {payload['to']}", 0)
                         await self.send(chat_id, f"✅ Письмо отправлено на {payload['to']}")
                         return
                     else:
-                        execute_intent(pending["id"], error=f"Unknown action: {pending['action_type']}")
+                        await loop.run_in_executor(None, execute_intent, pending["id"], None, f"Unknown action: {pending['action_type']}")
                         await self.send(chat_id, "⚠️ Неизвестный тип действия.")
                         return
                 except Exception as e:
-                    execute_intent(pending["id"], error=str(e))
+                    await loop.run_in_executor(None, execute_intent, pending["id"], None, str(e))
                     await self.send(chat_id, f"⚠️ Ошибка выполнения: {e}")
                     return
             else:
@@ -274,27 +314,29 @@ class TelegramRelay:
 
         if pending and is_rejection(text):
             from .approval import reject_intent
-            reject_intent(pending["id"])
-            save_message(uid, "telegram", "assistant", "❌ Действие отменено.", 0)
+            await loop.run_in_executor(None, reject_intent, pending["id"])
+            await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", "❌ Действие отменено.", 0)
             await self.send(chat_id, "❌ Действие отменено.")
             return
 
         # Normal chat flow
-        save_message(uid, "telegram", "user", text, 0)
+        await loop.run_in_executor(None, save_message, uid, "telegram", "user", text, 0)
 
-        # Hard quota check — block before Hermes call
-        ok, err_msg = check_quota(uid)
+        # Hard quota check — block before Hermes call (with reserve)
+        from .quota import MIN_QUOTA_RESERVE_TOKENS, MAX_TOKENS_PER_RESPONSE
+        ok, err_msg = await loop.run_in_executor(None, check_quota, uid, MAX_TOKENS_PER_RESPONSE + MIN_QUOTA_RESERVE_TOKENS)
         if not ok:
-            save_message(uid, "telegram", "assistant", err_msg, 0)
+            await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", err_msg, 0)
             await self.send(chat_id, f"⚠️ {err_msg}")
             return
 
-        history = get_history(uid)
-        messages = [{"role": "system", "content": build_system_prompt(uid)}]
+        history = await loop.run_in_executor(None, get_history, uid)
+        system_prompt = await loop.run_in_executor(None, build_system_prompt, uid)
+        messages = [{"role": "system", "content": system_prompt}]
         for h in history:
             messages.append({"role": h["role"], "content": h["content"]})
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=600) as client:
                 r = await client.post(
                     f"{HERMES_API_URL}/v1/chat/completions",
                     json={"model": HERMES_MODEL, "messages": messages, "max_tokens": 1024, "stream": False},
@@ -308,16 +350,17 @@ class TelegramRelay:
                 data = r.json()
             content = data["choices"][0]["message"]["content"]
             total = data.get("usage", {}).get("total_tokens", 0)
-            save_message(uid, "telegram", "assistant", content, total)
-            quota_record(uid, "telegram", total)
+            await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", content, total)
+            await loop.run_in_executor(None, quota_record, uid, "telegram", total)
 
             # Check if response contains action intent
             intent_data = _extract_intent_from_response(content)
             if intent_data and intent_data["action_type"] in REVIEW_ACTIONS:
                 from .approval import create_intent
-                intent = create_intent(uid, intent_data["action_type"], intent_data["payload"])
+                clean = _strip_intent_block(content)
+                intent = await loop.run_in_executor(None, create_intent, uid, intent_data["action_type"], intent_data["payload"])
                 display = format_intent_payload(intent)
-                await self.send(chat_id, f"{display}\n\n❓ Подтверди или отмень (ответь «подтверждаю» или «отмена»)")
+                await self.send(chat_id, f"{clean}\n\n{display}\n\n❓ Подтверди или отмень (ответь «подтверждаю» или «отмена»)")
             else:
                 await self.send(chat_id, content)
 
@@ -327,7 +370,39 @@ class TelegramRelay:
             await self.send(chat_id, "⚠️ Сервис временно недоступен. Попробуй позже.")
         except httpx.TimeoutException:
             log.exception("process_chat_message: gateway timeout")
-            await self.send(chat_id, "⚠️ Превышено время ожидания. Попробуй позже.")
+            await self.send(chat_id, "⏳ Запрос всё ещё выполняется. Я пришлю ответ, когда он будет готов.")
+            try:
+                async with httpx.AsyncClient(timeout=600) as client:
+                    r = await client.post(
+                        f"{HERMES_API_URL}/v1/chat/completions",
+                        json={"model": HERMES_MODEL, "messages": messages, "max_tokens": 1024, "stream": False},
+                        headers={
+                            "Authorization": f"Bearer {HERMES_API_KEY}",
+                            "Content-Type": "application/json",
+                            "X-Hermes-Session-Key": uid,
+                        },
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                content = data["choices"][0]["message"]["content"]
+                total = data.get("usage", {}).get("total_tokens", 0)
+                await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", content, total)
+                await loop.run_in_executor(None, quota_record, uid, "telegram", total)
+                intent_data = _extract_intent_from_response(content)
+                if intent_data and intent_data["action_type"] in REVIEW_ACTIONS:
+                    from .approval import create_intent
+                    clean = _strip_intent_block(content)
+                    intent = await loop.run_in_executor(None, create_intent, uid, intent_data["action_type"], intent_data["payload"])
+                    display = format_intent_payload(intent)
+                    await self.send(chat_id, f"{clean}\n\n{display}\n\n❓ Подтверди или отмень (ответь «подтверждаю» или «отмена»)")
+                else:
+                    await self.send(chat_id, content)
+                asyncio.create_task(maybe_summarize(uid))
+            except httpx.TimeoutException:
+                await self.send(chat_id, "⏳ Запрос всё ещё обрабатывается. Придёт ответом, как только будет готов.")
+            except Exception as e:
+                log.exception("process_chat_message: retry error")
+                await self.send(chat_id, f"⚠️ Не удалось получить ответ: {e}")
         except Exception as e:
             log.exception("process_chat_message error")
             await self.send(chat_id, f"⚠️ Ошибка: {e}")
@@ -426,7 +501,7 @@ class TelegramRelay:
 
         # Handle /whoami command
         if text == "/whoami":
-            auth = _load_auth()
+            auth = await _aload_auth()
             uid = auth.get(str(tg_id))
             if uid:
                 await self.send(chat_id, f"🆔 Твой UID: <code>{uid}</code>", parse_mode="HTML")
@@ -436,40 +511,39 @@ class TelegramRelay:
 
         # Handle /files command
         if text == "/files":
-            auth = _load_auth()
+            auth = await _aload_auth()
             uid = auth.get(str(tg_id))
             if not uid:
                 await self.send(chat_id, "❌ Ты не привязан. Отправь /start КОД")
                 return
             files_dir = HERMES_USERS_DIR / uid / "files"
-            if not files_dir.exists():
+            exists, files = await asyncio.to_thread(_list_user_files, files_dir)
+            if not exists:
                 await self.send(chat_id, "📁 У тебя нет файлов.")
                 return
-            files = list(files_dir.iterdir())
-            files = [f for f in files if f.is_file()]
             if not files:
                 await self.send(chat_id, "📁 У тебя нет файлов.")
                 return
-            file_list = "\n".join(f"• {f.name} ({f.stat().st_size // 1024}KB)" for f in sorted(files))
+            file_list = "\n".join(f"• {f}" for f in files)
             await self.send(chat_id, f"📁 Твои файлы:\n{file_list}")
             return
 
         # Handle /unlink command
         if text == "/unlink":
-            auth = _load_auth()
+            auth = await _aload_auth()
             if str(tg_id) in auth:
                 del auth[str(tg_id)]
-                _save_auth(auth)
+                await _asave_auth(auth)
             from .db import get_db
-            db = get_db()
-            db.execute("UPDATE users SET telegram_id=NULL WHERE telegram_id=?", (tg_id,))
+            db = await asyncio.to_thread(get_db)
+            await asyncio.to_thread(db.execute, "UPDATE users SET telegram_id=NULL WHERE telegram_id=?", (tg_id,))
             await self.send(chat_id, "🔓 Аккаунт отвязан. Ты можешь привязать другой аккаунт через /start КОД")
             return
 
         # Handle file (document)
         document = message.get("document")
         if document:
-            auth = _load_auth()
+            auth = await _aload_auth()
             uid = auth.get(str(tg_id))
             if not uid:
                 await self.send(
@@ -504,7 +578,7 @@ class TelegramRelay:
         # Handle photo
         photo = message.get("photo")
         if photo:
-            auth = _load_auth()
+            auth = await _aload_auth()
             uid = auth.get(str(tg_id))
             if not uid:
                 await self.send(
@@ -538,9 +612,57 @@ class TelegramRelay:
                 await self.send(chat_id, f"❌ {msg}")
             return
 
+        # Handle voice message
+        voice = message.get("voice")
+        if voice:
+            auth = await _aload_auth()
+            uid = auth.get(str(tg_id))
+            if not uid:
+                await self.send(
+                    chat_id,
+                    "❌ Ты не зарегистрирован.\n\n"
+                    "Зайди на https://hermes.kulinich.ru/chat/ → Профиль,\n"
+                    "получи invite-code, потом /start <code>INVITE-CODE</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            file_id = voice.get("file_id")
+            duration = voice.get("duration", 0)
+            await self.send(chat_id, f"🎤 Распознаю голосовое ({duration}с)...")
+
+            try:
+                file_info = await self._tg("getFile", file_id=file_id)
+                tg_file_path = file_info.get("file_path")
+                if not tg_file_path:
+                    await self.send(chat_id, "❌ Не удалось получить файл.")
+                    return
+
+                url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{tg_file_path}"
+                r = await self._client.get(url)
+                r.raise_for_status()
+                audio_bytes = r.content
+
+                from .stt import transcribe
+                text = await transcribe(audio_bytes)
+                if not text:
+                    await self.send(chat_id, "❌ Не удалось распознать голосовое сообщение.")
+                    return
+
+                await self.send(chat_id, f"🎤 Распознано: {text}")
+                await self.send(chat_id, "🤖 Принял запрос в обработку. Как только будет готов ответ — я его пришлю.")
+                asyncio.create_task(self.process_chat_message(uid, chat_id, text))
+            except httpx.HTTPError as e:
+                log.exception(f"voice download error: {e}")
+                await self.send(chat_id, f"❌ Ошибка скачивания: {e}")
+            except Exception as e:
+                log.exception(f"voice processing error: {e}")
+                await self.send(chat_id, f"❌ Ошибка: {e}")
+            return
+
         # Handle text message
         if text:
-            auth = _load_auth()
+            auth = await _aload_auth()
             uid = auth.get(str(tg_id))
             if not uid:
                 await self.send(
@@ -594,11 +716,28 @@ class TelegramRelay:
                 await asyncio.sleep(5)
 
 
+# Module-level relay instance for API access
+_relay_instance: TelegramRelay | None = None
+
+
+async def send_message(chat_id: int, text: str, parse_mode: str | None = None) -> dict:
+    """Send a Telegram message via the active relay.
+    Called from API endpoints (e.g. gateway bridge).
+    Returns {"ok": True} or raises RuntimeError.
+    """
+    if not _relay_instance:
+        raise RuntimeError("Telegram relay not started (TELEGRAM_BOT_TOKEN not set?)")
+    await _relay_instance.send(chat_id, text, parse_mode=parse_mode)
+    return {"ok": True}
+
+
 async def start_relay_task() -> asyncio.Task | None:
+    global _relay_instance
     if not TELEGRAM_BOT_TOKEN:
         log.info("TELEGRAM_BOT_TOKEN not set, relay disabled")
         return None
     relay = TelegramRelay()
+    _relay_instance = relay
     task = asyncio.create_task(relay.run(), name="telegram-relay")
     log.info("telegram relay started")
     return task
