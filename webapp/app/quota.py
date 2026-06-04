@@ -5,6 +5,7 @@ a daily JSON snapshot per user for human inspection.
 
 HARD CAP: requests are blocked when quota_remaining <= 0.
 """
+import asyncio
 import json
 import logging
 import os
@@ -15,14 +16,17 @@ from .db import QUOTAS_DIR, get_db, now_iso
 
 WELCOME_QUOTA = int(os.environ.get("WELCOME_QUOTA", "2000000"))
 ALERT_THRESHOLD_PCT = int(os.environ.get("ALERT_THRESHOLD_PCT", "80"))
+MIN_QUOTA_RESERVE_TOKENS = int(os.environ.get("MIN_QUOTA_RESERVE_TOKENS", "2048"))
+MAX_TOKENS_PER_RESPONSE = int(os.environ.get("MAX_TOKENS_PER_RESPONSE", "1024"))
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_ADMIN_BOT_TOKEN = os.environ.get("TELEGRAM_ADMIN_BOT_TOKEN", "").strip() or TELEGRAM_BOT_TOKEN
 TELEGRAM_ADMIN_CHAT_ID = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
 
 
-def check_quota(uid: str) -> tuple[bool, str]:
+def check_quota(uid: str, estimated_tokens: int | None = None) -> tuple[bool, str]:
     """Preflight quota check. Returns (ok, error_message).
     Call BEFORE making Hermes API request.
+    If estimated_tokens is provided, also checks against reserve.
     """
     remaining = _quota_remaining(uid)
     if remaining <= 0:
@@ -30,7 +34,12 @@ def check_quota(uid: str) -> tuple[bool, str]:
             f"⚠️ Квота исчерпана. Использовано {WELCOME_QUOTA:,} из {WELCOME_QUOTA:,} токенов.\n"
             "Обратитесь к администратору для продления квоты."
         )
-    # Warn if close to limit (but still allow)
+    reserve = estimated_tokens or MIN_QUOTA_RESERVE_TOKENS
+    if remaining < reserve:
+        return False, (
+            f"⚠️ Недостаточно квоты (осталось {remaining:,}, нужно ~{reserve:,}). "
+            "Попробуйте позже или обратитесь к администратору."
+        )
     return True, ""
 
 
@@ -44,18 +53,21 @@ def _today() -> str:
 
 def record(uid: str, channel: str, tokens: int) -> int:
     """Декремент quota_remaining, инкремент quota_used, обновление daily JSON.
+    Clamp-ит остаток: quota не может стать ниже 0.
     Возвращает новое значение quota_remaining.
     """
     if tokens <= 0:
         return _quota_remaining(uid)
     db = get_db()
+    current = _quota_remaining(uid)
+    actual = min(tokens, current)
     db.execute(
         "UPDATE users SET quota_remaining = COALESCE(quota_remaining, 0) - ?, "
         "quota_used = COALESCE(quota_used, 0) + ? "
         "WHERE uid=?",
-        (tokens, tokens, uid),
+        (actual, actual, uid),
     )
-    _update_daily(uid, channel, tokens)
+    _update_daily(uid, channel, actual)
     remaining = _quota_remaining(uid)
     _maybe_alert(uid, remaining)
     return remaining
@@ -187,3 +199,20 @@ def get_usage(uid: str) -> dict:
         "month_calls": monthly_calls,
         "alert_threshold_pct": ALERT_THRESHOLD_PCT,
     }
+
+
+# --- Async wrappers ---
+
+async def acheck_quota(uid: str, estimated_tokens: int | None = None) -> tuple[bool, str]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, check_quota, uid, estimated_tokens)
+
+
+async def arecord(uid: str, channel: str, tokens: int) -> int:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, record, uid, channel, tokens)
+
+
+async def aget_usage(uid: str) -> dict:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, get_usage, uid)

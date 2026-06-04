@@ -12,7 +12,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # Application secret used for key derivation (from env)
-_APP_SECRET = os.environ.get("WEBAPP_INTERNAL_SECRET", os.environ.get("JWT_SECRET", ""))
+# Prefer USER_SECRET_ENCRYPTION_KEY as a dedicated key
+_USER_SECRET_ENCRYPTION_KEY = os.environ.get("USER_SECRET_ENCRYPTION_KEY")
+_APP_SECRET = _USER_SECRET_ENCRYPTION_KEY or os.environ.get("WEBAPP_INTERNAL_SECRET") or os.environ.get("JWT_SECRET", "")
 
 # Prefix for encrypted values to distinguish from plaintext
 _ENC_PREFIX = "enc:v1:"
