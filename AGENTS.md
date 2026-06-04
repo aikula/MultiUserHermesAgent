@@ -143,6 +143,27 @@ docker exec hermes-gateway hermes doctor
 - **Traefik для gateway API**: добавить router/service labels в `docker-compose.yml` (сейчас API доступен только внутри сети).
 - **STT (голосовые сообщения Telegram)**: используется GigaAM Voice API (`tts.kulinich.ai`). API ленивое — при `wait_for_result=false` возвращает `job_id` для polling. Переменные: `STT_API_URL`, `STT_API_KEY` (Bearer token). Модель: `gigaam-e2e` (русская речь).
 
+## Учебный MVP — спекцификации и точки роста
+
+Параллельно с upstream-функциональностью в `docs/specs/` лежат спецификации
+для **учебного MVP** (настройка персонального агента для управленца).
+Это будущие спринты — каждая спека самодостаточна и может браться отдельно.
+
+| Спека | Что добавляется | Статус |
+|---|---|---|
+| `10_files_ui.md` | Tab «Файлы»: `app/file_service.py`, `/api/files/*`, `templates/files.html`, path-traversal guard, storage quota, Ask-agent | Не начато |
+| `13_hermes_skills_usage.md` | `app/skills/library/*.md` (10 управленческих шаблонов), компактный список в `build_system_prompt`, full-inject on selection, вкладка Skills | Не начато |
+| `11_scheduler_proactivity_automations.md` | Таблицы `scheduled_jobs`+`job_runs`, `app/scheduler.py` (worker-loop 30–60s), `app/jobs/handlers/*` (reminder/morning_digest/custom_prompt), вкладка «Автоматизации», quota-guard, proactive TG | Не начато |
+| `12_browsing_parsing_and_mcp.md` | `app/tools/web_tools.py`: SearxNG + trafilatura + safe-fetch (SSRF block), `web_download_files` через approval, скачивание в Files | Не начато |
+| `09_training_mvp_scope.md` + `docs/training/lesson_scenario_agent_setup.md` | E2E прогон 90-мин сценария «настройка персонального агента» | После 10–13 |
+
+**Соглашения для новых модулей:**
+- Backend-модули в `webapp/app/`, тесты рядом в `webapp/tests/`, имя `test_<модуль>.py`.
+- Любое state-changing API — через CSRF (`/api/...` использует middleware из `app/main.py`).
+- Любой внешний fetch (web/scheduler) — quota-check ПЕРЕД вызовом LLM (через `app/quota.py`).
+- Любые скачивания извне — в `HERMES_USERS_DIR/<uid>/files/` с проверкой расширения/размера/SSRF.
+- Аппрувы — добавлять новые `action_type` в `REVIEW_ACTIONS` в `app/relay.py`.
+
 ## Известные ограничения
 
 - `command_allowlist: []` при `approvals.mode: manual` — для cron-автоматизации нужно либо добавить команды в allowlist, либо переключить режим.
