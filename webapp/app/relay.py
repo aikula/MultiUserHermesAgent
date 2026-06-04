@@ -49,7 +49,7 @@ TELEGRAM_LINK_TTL = int(os.environ.get("TELEGRAM_LINK_TTL", "600"))
 HERMES_API_URL = os.environ.get("HERMES_API_URL", "http://hermes-gateway:8642")
 HERMES_API_KEY = os.environ["HERMES_API_KEY"]
 HERMES_MODEL = os.environ.get("HERMES_MODEL", "hermes-agent")
-MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "20"))
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "8"))
 MAX_TG_MSG = 4000  # Telegram message limit is 4096
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB max file size
 

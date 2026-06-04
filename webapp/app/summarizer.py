@@ -14,7 +14,7 @@ import httpx
 from .chat import HERMES_API_KEY, HERMES_API_URL, HERMES_MODEL
 from .db import HERMES_USERS_DIR, get_db
 
-SUMMARY_THRESHOLD = int(os.environ.get("SUMMARY_THRESHOLD", "20"))
+SUMMARY_THRESHOLD = int(os.environ.get("SUMMARY_THRESHOLD", "10"))
 SUMMARY_MAX_HISTORY = int(os.environ.get("SUMMARY_MAX_HISTORY", "100"))
 
 _locks: dict[str, asyncio.Lock] = {}
@@ -52,7 +52,7 @@ SUMMARY_PROMPT = """\
 о пользователе {login} на основе истории диалогов.
 
 ПРАВИЛА:
-- Пиши КРАТКО. Целься в 500-1500 слов суммарно. Если память разрастается — сжимай старые пункты.
+- Пиши МАКСИМАЛЬНО КРАТКО. Целься в 200-500 слов. Сжимай старые пункты.
 - Используй bullet points, не прозу.
 - Обновляй существующие категории на месте. Не создавай новые категории без причины.
 - Включай ТОЛЬКО ФАКТЫ, полезные ассистенту при следующих сессиях: имя, работа, проекты, \

@@ -10,7 +10,7 @@ from .skills.manager_templates import get_manager_templates_block
 HERMES_API_URL = os.environ.get("HERMES_API_URL", "http://hermes-gateway:8642")
 HERMES_API_KEY = os.environ["HERMES_API_KEY"]
 HERMES_MODEL = os.environ.get("HERMES_MODEL", "hermes-agent")
-MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "20"))
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "8"))
 
 
 def _get_user_files(uid: str) -> list[dict]:
@@ -53,20 +53,10 @@ def build_system_prompt(uid: str) -> str:
     # User's files
     files = _get_user_files(uid)
     if files:
-        file_list = "\n".join(f"- `{f['name']}` ({f['size_human']})" for f in files)
+        file_list = ", ".join(f"{f['name']}({f['size_human']})" for f in files)
         parts.append(
-            f"\n## Файлы пользователя\n"
-            f"У пользователя есть файлы в папке `/opt/hermes-users/{uid}/files/`:\n"
-            f"{file_list}\n\n"
-            f"Для работы с файлами используй Python в sandbox:\n"
-            f"```python\n"
-            f"# Пример чтения текстового файла\n"
-            f"with open('/opt/hermes-users/{uid}/files/FILENAME', 'r') as f:\n"
-            f"    content = f.read()\n\n"
-            f"# Пример чтения CSV\n"
-            f"import pandas as pd\n"
-            f"df = pd.read_csv('/opt/hermes-users/{uid}/files/FILENAME')\n"
-            f"```\n"
+            f"\n## Файлы\n{file_list}\n"
+            f"Путь: /opt/hermes-users/{uid}/files/. Для чтения: open('...').read()"
         )
 
     # Email capability (NEVER expose credentials to LLM)
