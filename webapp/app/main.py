@@ -607,6 +607,48 @@ async def files_page(request: Request, path: str = "", user: str | None = Depend
                    listing=listing)
 
 
+@app.get("/skills", response_class=HTMLResponse)
+async def skills_page(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    from .skills.loader import get_skill, list_skills
+    skills = await asyncio.to_thread(list_skills)
+    # Eagerly include full text so the page renders without an extra fetch.
+    enriched = []
+    for s in skills:
+        enriched.append({
+            "name": s.name,
+            "title": s.title,
+            "hint": s.hint,
+            "full": get_skill(s.name) or "",
+        })
+    u = await asyncio.to_thread(
+        lambda: get_db().execute("SELECT login, name FROM users WHERE uid=?", (user,)).fetchone()
+    )
+    return _render(request, "skills.html", user={"uid": user, **(dict(u) if u else {"login": "?", "name": "?"})},
+                   skills=enriched)
+
+
+@app.get("/api/skills/list")
+async def api_skills_list(user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    from .skills.loader import list_skills
+    skills = await asyncio.to_thread(list_skills)
+    return JSONResponse({"ok": True, "skills": [s.to_dict() for s in skills]})
+
+
+@app.get("/api/skills/{name}")
+async def api_skill_get(name: str, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    from .skills.loader import get_skill
+    md = await asyncio.to_thread(get_skill, name)
+    if md is None:
+        return JSONResponse({"ok": False, "error": "Skill not found"}, status_code=404)
+    return JSONResponse({"ok": True, "name": name, "content": md})
+
+
 @app.get("/api/files")
 async def api_files_list(path: str = "", user: str | None = Depends(current_user)):
     if not user:
@@ -762,12 +804,28 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
     if not ok:
         raise HTTPException(429, err_msg)
 
+    # Skill activation (spec 13): user message may start with `[Используй навык: name]`.
+    # The full skill text is injected into THIS turn's user message, while the raw
+    # content (with marker) is preserved in history for audit.
+    skill_name, cleaned_content = chat.detect_skill_request(content)
+    if skill_name and chat.get_skill(skill_name) is None:
+        # Unknown skill — treat as if marker wasn't there, but tell the client
+        skill_name = None
+    effective_user_text = cleaned_content if (skill_name and cleaned_content) else content
+    if not effective_user_text:
+        raise HTTPException(400, "empty content after skill marker")
+
     await loop.run_in_executor(None, chat.save_message, user, "web", "user", content, 0)
     history = await loop.run_in_executor(None, chat.get_history, user)
     system_prompt = await loop.run_in_executor(None, chat.build_system_prompt, user)
     messages = [{"role": "system", "content": system_prompt}]
     for h in history:
         messages.append({"role": h["role"], "content": h["content"]})
+    # Replace the last user turn (just-saved raw content) with the cleaned version
+    # + skill-injected wrapper when a skill is active.
+    if skill_name and cleaned_content:
+        messages.pop()  # the raw `[...]\n`+cleaned entry
+        messages.append(chat.build_skill_user_message(skill_name, cleaned_content))
 
     try:
         result = await chat.call_hermes(messages, uid=user)
@@ -792,6 +850,7 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
                 "total_tokens": result["total_tokens"],
             },
             "finish_reason": result["finish_reason"],
+            "skill": skill_name,
             "approval": {
                 "intent_id": intent["id"],
                 "action_type": intent["action_type"],
@@ -807,6 +866,7 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
             "total_tokens": result["total_tokens"],
         },
         "finish_reason": result["finish_reason"],
+        "skill": skill_name,
     })
 
 

@@ -1,12 +1,19 @@
 """Chat: per-user context, Hermes API calls, history."""
 import asyncio
 import os
+import re
 from datetime import datetime, timezone
 
 import httpx
 
 from .db import HERMES_USERS_DIR, get_db, now_iso
+from .skills.loader import get_skill, render_compact_list
 from .skills.manager_templates import get_manager_templates_block
+
+# Marker for explicit skill activation (set by the Skills tab).
+# The full skill text is injected into the current turn's messages
+# (not into the cached system prompt) — keeps the prompt compact.
+SKILL_MARKER_RE = re.compile(r"^\s*\[Используй навык:\s*([a-z0-9_]+)\]\s*\n?", re.IGNORECASE)
 
 HERMES_API_URL = os.environ.get("HERMES_API_URL", "http://hermes-gateway:8642")
 HERMES_API_KEY = os.environ["HERMES_API_KEY"]
@@ -97,7 +104,49 @@ def build_system_prompt(uid: str) -> str:
     # Manager skill templates (routing + 6 demo formats)
     parts.append("\n" + get_manager_templates_block())
 
+    # Compact skills library (spec 13) — names + 1-line hints only.
+    # Full text is injected per-turn via detect_skill_request().
+    skills_block = render_compact_list()
+    if skills_block:
+        parts.append("\n" + skills_block)
+
     return "\n\n".join(parts).strip()
+
+
+def detect_skill_request(content: str) -> tuple[str | None, str]:
+    """Detect explicit skill activation in a user message.
+
+    Returns (skill_name_or_None, cleaned_content).
+    If the user message starts with `[Используй навык: name]`, the marker is
+    stripped and the skill name is returned. The full skill text should be
+    fetched via `get_skill(name)` and injected into THIS turn's messages.
+    """
+    if not content:
+        return None, content
+    m = SKILL_MARKER_RE.match(content)
+    if not m:
+        return None, content
+    name = m.group(1).strip().lower()
+    cleaned = content[m.end():]
+    return name, cleaned
+
+
+def build_skill_user_message(skill_name: str, original_content: str) -> dict:
+    """Build a single user-role message that injects the full skill text.
+
+    The skill content is wrapped in a system-style block; the user's actual
+    request is included as a quoted 'Request' section so the model knows
+    what to do with the skill.
+    """
+    skill_md = get_skill(skill_name) or ""
+    body = (
+        f"## Активный навык: {skill_name}\n\n"
+        f"{skill_md}\n\n"
+        f"---\n\n"
+        f"## Запрос пользователя\n\n"
+        f"{original_content.strip()}"
+    )
+    return {"role": "user", "content": body}
 
 
 def get_history(uid: str, limit: int = MAX_HISTORY) -> list[dict]:

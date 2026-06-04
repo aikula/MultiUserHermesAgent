@@ -16,6 +16,7 @@
   }
 
   // Optional prefill from ?prefill=... query string (e.g. from Files "Ask agent")
+  // or ?skill=name (from the Skills tab — wraps the user's request in a marker).
   (function applyPrefill() {
     const params = new URLSearchParams(window.location.search);
     const prefill = params.get("prefill");
@@ -27,6 +28,33 @@
       window.history.replaceState({}, "", url.pathname + (url.search || "") + url.hash);
       // Focus so the user can just press Enter
       setTimeout(() => input.focus(), 0);
+      return;
+    }
+    const skill = params.get("skill");
+    if (skill) {
+      // The Skills tab stashes a structured prefill in localStorage; fall back
+      // to the bare marker if it's missing (e.g. user typed ?skill= by hand).
+      let stored = null;
+      try {
+        const raw = localStorage.getItem("hermes_prefill");
+        if (raw) {
+          const data = JSON.parse(raw);
+          if (data && data.marker && Date.now() - (data.ts || 0) < 60_000) {
+            stored = data;
+          }
+          localStorage.removeItem("hermes_prefill");
+        }
+      } catch (e) { /* ignore */ }
+      const marker = stored ? stored.marker : "[Используй навык: " + skill + "]";
+      input.value = marker + "\n\n";
+      const url = new URL(window.location.href);
+      url.searchParams.delete("skill");
+      window.history.replaceState({}, "", url.pathname + (url.search || "") + url.hash);
+      setTimeout(() => {
+        input.focus();
+        // Place caret right after the marker so the user types their request.
+        input.setSelectionRange(marker.length + 1, marker.length + 1);
+      }, 0);
     }
   })();
 

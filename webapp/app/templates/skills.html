@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Навыки — Hermes{% endblock %}
+{% block content %}
+<h1>Навыки</h1>
+<p class="lead">
+  Шаблоны управленческих задач. Навык — это инструкция для ассистента: формат, критерии качества, пример.
+  Нажми «Использовать в чате» — и ассистент отработает запрос по шагам.
+</p>
+
+{% for s in skills %}
+  <article class="skill-card" data-skill="{{ s.name }}" id="skill-{{ s.name }}">
+    <header class="skill-head">
+      <h2>{{ s.title }}</h2>
+      <code class="skill-name">{{ s.name }}</code>
+    </header>
+    <p class="skill-hint">{{ s.hint }}</p>
+    <details class="skill-body">
+      <summary>Показать полный шаблон</summary>
+      <pre class="skill-md">{{ s.full }}</pre>
+    </details>
+    <div class="skill-actions">
+      <button class="btn btn-primary btn-use-skill"
+              data-name="{{ s.name }}"
+              data-title="{{ s.title }}">Использовать в чате</button>
+    </div>
+  </article>
+{% endfor %}
+
+<script>
+  document.querySelectorAll('.btn-use-skill').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.name;
+      const title = btn.dataset.title;
+      const marker = '[Используй навык: ' + name + ']';
+      // Pre-fill the chat input on the index page.
+      try {
+        localStorage.setItem('hermes_prefill', JSON.stringify({
+          marker: marker,
+          title: title,
+          ts: Date.now(),
+        }));
+      } catch (e) { /* localStorage may be disabled */ }
+      window.location.href = "{{ chat_prefix }}/?skill=" + encodeURIComponent(name);
+    });
+  });
+</script>
+{% endblock %}
