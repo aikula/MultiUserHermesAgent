@@ -193,6 +193,10 @@ async def startup() -> None:
     from .relay import start_relay_task
     await start_relay_task()
 
+    # Start the scheduled-jobs worker (spec 11)
+    from .scheduler import start_scheduler_task
+    start_scheduler_task()
+
 
 @app.get("/health")
 def health() -> dict:
@@ -656,6 +660,116 @@ async def api_skill_get(name: str, user: str | None = Depends(current_user)):
     if md is None:
         return JSONResponse({"ok": False, "error": "Skill not found"}, status_code=404)
     return JSONResponse({"ok": True, "name": name, "content": md})
+
+
+# --- Scheduled jobs (spec 11) ---
+
+@app.get("/api/jobs")
+async def api_jobs_list(user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    from .jobs import store as job_store
+    jobs = await asyncio.to_thread(job_store.list_jobs, user)
+    return JSONResponse({"ok": True, "jobs": jobs})
+
+
+@app.post("/api/jobs")
+async def api_jobs_create(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    body = await request.json()
+    from .jobs import store as job_store
+    try:
+        job = await asyncio.to_thread(
+            job_store.create_job,
+            uid=user,
+            title=body.get("title", ""),
+            kind=body.get("kind", ""),
+            schedule_type=body.get("schedule_type", ""),
+            run_at=body.get("run_at"),
+            time_of_day=body.get("time_of_day"),
+            weekdays=body.get("weekdays"),
+            channel=body.get("channel", "web"),
+            payload=body.get("payload") or {},
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return JSONResponse({"ok": True, "job": job})
+
+
+@app.post("/api/jobs/{job_id}/disable")
+async def api_jobs_disable(request: Request, job_id: str, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    from .jobs import store as job_store
+    ok = await asyncio.to_thread(job_store.set_status, user, job_id, "disabled")
+    if not ok:
+        raise HTTPException(404, "job not found or not owned")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/jobs/{job_id}/enable")
+async def api_jobs_enable(request: Request, job_id: str, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    from .jobs import store as job_store
+    ok = await asyncio.to_thread(job_store.set_status, user, job_id, "enabled")
+    if not ok:
+        raise HTTPException(404, "job not found or not owned")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/jobs/{job_id}/delete")
+async def api_jobs_delete(request: Request, job_id: str, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    from .jobs import store as job_store
+    ok = await asyncio.to_thread(job_store.delete_job, user, job_id)
+    if not ok:
+        raise HTTPException(404, "job not found or not owned")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/jobs/{job_id}/run-now")
+async def api_jobs_run_now(request: Request, job_id: str, user: str | None = Depends(current_user)):
+    if not user:
+        raise HTTPException(401, "not authenticated")
+    require_csrf(request)
+    from .scheduler import run_now
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, run_now, user, job_id)
+    if result.get("status") == "not_found":
+        raise HTTPException(404, "job not found or not owned")
+    return JSONResponse({"ok": True, "result": result})
+
+
+@app.get("/automations", response_class=HTMLResponse)
+async def automations_page(request: Request, user: str | None = Depends(current_user)):
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    from .jobs import store as job_store
+    jobs = await asyncio.to_thread(job_store.list_jobs, user)
+    # Last 10 runs across the user's jobs (for the "last runs" section)
+    from .db import get_db as _get_db
+    runs = await asyncio.to_thread(
+        lambda: _get_db().execute(
+            "SELECT r.id, r.job_id, r.started_at, r.finished_at, r.status, "
+            "       r.result, j.title AS job_title "
+            "FROM job_runs r LEFT JOIN scheduled_jobs j ON j.id=r.job_id "
+            "WHERE r.uid=? ORDER BY r.started_at DESC LIMIT 10",
+            (user,),
+        ).fetchall()
+    )
+    u = await asyncio.to_thread(
+        lambda: get_db().execute("SELECT login, name FROM users WHERE uid=?", (user,)).fetchone()
+    )
+    return _render(request, "automations.html",
+                   user={"uid": user, **(dict(u) if u else {"login": "?", "name": "?"})},
+                   jobs=jobs, runs=[dict(r) for r in runs])
 
 
 @app.get("/api/files")
