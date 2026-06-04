@@ -102,6 +102,51 @@ CREATE TABLE IF NOT EXISTS action_intents (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_uid_created ON chat_history(uid, created_at);
 CREATE INDEX IF NOT EXISTS idx_intents_uid_status ON action_intents(uid, status);
+
+-- Scheduled automations (spec 11)
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id TEXT PRIMARY KEY,
+    uid TEXT NOT NULL REFERENCES users(uid),
+    title TEXT NOT NULL,
+    kind TEXT NOT NULL,                    -- 'reminder' | 'morning_digest' | 'custom_prompt'
+    status TEXT NOT NULL DEFAULT 'enabled',-- 'enabled' | 'disabled' | 'deleted'
+    schedule_type TEXT NOT NULL,           -- 'one_time' | 'daily' | 'weekly'
+    run_at TEXT,                           -- ISO UTC; used for one_time and as the seed for daily/weekly
+    rrule TEXT,                            -- optional RFC5545/RRULE-ish; for MVP we just use it as a hint
+    next_run_at TEXT,                      -- ISO UTC; the worker uses this
+    channel TEXT NOT NULL DEFAULT 'web',   -- 'telegram' | 'web' | 'both'
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_run_at TEXT,
+    last_result TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_uid_status ON scheduled_jobs(uid, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_due ON scheduled_jobs(status, next_run_at);
+
+CREATE TABLE IF NOT EXISTS job_runs (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES scheduled_jobs(id),
+    uid TEXT NOT NULL REFERENCES users(uid),
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL,                  -- 'running' | 'success' | 'error' | 'skipped_quota'
+    result TEXT,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_runs_job_started ON job_runs(job_id, started_at);
+
+-- Web notification center (spec 11 nice-to-have)
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uid TEXT NOT NULL REFERENCES users(uid),
+    title TEXT NOT NULL,
+    body TEXT,
+    link TEXT,
+    read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notif_uid_created ON notifications(uid, created_at);
 """
 
 
