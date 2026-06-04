@@ -15,6 +15,17 @@ from .chat import build_system_prompt, get_history, save_message
 from .db import HERMES_USERS_DIR, HERMES_SHARED_DIR
 from .quota import check_quota, record as quota_record
 
+# Slash-команды, которые relay обрабатывает локально.
+# Любая другая команда (начинается с /) НЕ пробрасывается в LLM — иначе
+# LLM видит «/foo bar», путается и галлюцинирует «No main session found».
+KNOWN_COMMANDS = {"/start", "/login", "/help", "/whoami", "/files", "/unlink", "/new", "/reset"}
+
+# Фразы, которыми LLM иногда галлюцинирует «нет сессии». Ловим и даём
+# человеко-понятный ответ вместо загадочной англоязычной строки.
+GATEWAY_CONFUSED_PATTERNS = re.compile(
+    r"(?i)(no main session|create one via|web ui first|/new or web|main session not found)"
+)
+
 # Action types that require approval before execution
 REVIEW_ACTIONS = {"email_send", "calendar_create", "calendar_update", "telegram_send_external", "file_share_external"}
 
@@ -52,6 +63,7 @@ HERMES_MODEL = os.environ.get("HERMES_MODEL", "hermes-agent")
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "8"))
 MAX_TG_MSG = 4000  # Telegram message limit is 4096
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB max file size
+LONG_POLL_TIMEOUT = 25  # Telegram best practice; <1 wastes requests, >30 hits client timeout
 
 # MVP allowed file extensions (per spec 01)
 ALLOWED_EXTENSIONS = {
@@ -190,6 +202,13 @@ class TelegramRelay:
                 else:
                     raise
 
+    async def typing(self, chat_id: int) -> None:
+        """Best-effort: показать 'печатает...' пока думаем. Тихо глотает ошибки."""
+        try:
+            await self._tg("sendChatAction", chat_id=chat_id, action="typing")
+        except Exception:
+            pass
+
     async def get_me(self):
         me = await self._tg("getMe")
         self.bot_username = me.get("username")
@@ -285,7 +304,7 @@ class TelegramRelay:
     async def process_chat_message(self, uid: str, chat_id: int, text: str):
         loop = asyncio.get_running_loop()
         # Check for pending approval first
-        from .approval import get_pending_intent, is_confirmation, is_rejection, format_intent_payload
+        from .approval import get_pending_intent, is_confirmation, is_rejection
         pending = await loop.run_in_executor(None, get_pending_intent, uid)
 
         if pending and is_confirmation(text):
@@ -335,36 +354,10 @@ class TelegramRelay:
         messages = [{"role": "system", "content": system_prompt}]
         for h in history:
             messages.append({"role": h["role"], "content": h["content"]})
+        await self.typing(chat_id)
         try:
-            async with httpx.AsyncClient(timeout=600) as client:
-                r = await client.post(
-                    f"{HERMES_API_URL}/v1/chat/completions",
-                    json={"model": HERMES_MODEL, "messages": messages, "max_tokens": 1024, "stream": False},
-                    headers={
-                        "Authorization": f"Bearer {HERMES_API_KEY}",
-                        "Content-Type": "application/json",
-                        "X-Hermes-Session-Key": uid,
-                    },
-                )
-                r.raise_for_status()
-                data = r.json()
-            content = data["choices"][0]["message"]["content"]
-            total = data.get("usage", {}).get("total_tokens", 0)
-            await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", content, total)
-            await loop.run_in_executor(None, quota_record, uid, "telegram", total)
-
-            # Check if response contains action intent
-            intent_data = _extract_intent_from_response(content)
-            if intent_data and intent_data["action_type"] in REVIEW_ACTIONS:
-                from .approval import create_intent
-                clean = _strip_intent_block(content)
-                intent = await loop.run_in_executor(None, create_intent, uid, intent_data["action_type"], intent_data["payload"])
-                display = format_intent_payload(intent)
-                await self.send(chat_id, f"{clean}\n\n{display}\n\n❓ Подтверди или отмень (ответь «подтверждаю» или «отмена»)")
-            else:
-                await self.send(chat_id, content)
-
-            asyncio.create_task(maybe_summarize(uid))
+            content, total = await self._call_hermes_and_record(uid, messages)
+            await self._deliver_response(chat_id, uid, content, total)
         except httpx.ConnectError:
             log.exception("process_chat_message: gateway connection error")
             await self.send(chat_id, "⚠️ Сервис временно недоступен. Попробуй позже.")
@@ -372,32 +365,8 @@ class TelegramRelay:
             log.exception("process_chat_message: gateway timeout")
             await self.send(chat_id, "⏳ Запрос всё ещё выполняется. Я пришлю ответ, когда он будет готов.")
             try:
-                async with httpx.AsyncClient(timeout=600) as client:
-                    r = await client.post(
-                        f"{HERMES_API_URL}/v1/chat/completions",
-                        json={"model": HERMES_MODEL, "messages": messages, "max_tokens": 1024, "stream": False},
-                        headers={
-                            "Authorization": f"Bearer {HERMES_API_KEY}",
-                            "Content-Type": "application/json",
-                            "X-Hermes-Session-Key": uid,
-                        },
-                    )
-                    r.raise_for_status()
-                    data = r.json()
-                content = data["choices"][0]["message"]["content"]
-                total = data.get("usage", {}).get("total_tokens", 0)
-                await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", content, total)
-                await loop.run_in_executor(None, quota_record, uid, "telegram", total)
-                intent_data = _extract_intent_from_response(content)
-                if intent_data and intent_data["action_type"] in REVIEW_ACTIONS:
-                    from .approval import create_intent
-                    clean = _strip_intent_block(content)
-                    intent = await loop.run_in_executor(None, create_intent, uid, intent_data["action_type"], intent_data["payload"])
-                    display = format_intent_payload(intent)
-                    await self.send(chat_id, f"{clean}\n\n{display}\n\n❓ Подтверди или отмень (ответь «подтверждаю» или «отмена»)")
-                else:
-                    await self.send(chat_id, content)
-                asyncio.create_task(maybe_summarize(uid))
+                content, total = await self._call_hermes_and_record(uid, messages)
+                await self._deliver_response(chat_id, uid, content, total)
             except httpx.TimeoutException:
                 await self.send(chat_id, "⏳ Запрос всё ещё обрабатывается. Придёт ответом, как только будет готов.")
             except Exception as e:
@@ -406,6 +375,55 @@ class TelegramRelay:
         except Exception as e:
             log.exception("process_chat_message error")
             await self.send(chat_id, f"⚠️ Ошибка: {e}")
+
+    async def _call_hermes_and_record(self, uid: str, messages: list[dict]) -> tuple[str, int]:
+        """POST to gateway, save assistant reply, record quota. Returns (content, total_tokens)."""
+        async with httpx.AsyncClient(timeout=600) as client:
+            r = await client.post(
+                f"{HERMES_API_URL}/v1/chat/completions",
+                json={"model": HERMES_MODEL, "messages": messages, "max_tokens": 1024, "stream": False},
+                headers={
+                    "Authorization": f"Bearer {HERMES_API_KEY}",
+                    "Content-Type": "application/json",
+                    "X-Hermes-Session-Key": uid,
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+        content = data["choices"][0]["message"]["content"]
+        total = data.get("usage", {}).get("total_tokens", 0)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, save_message, uid, "telegram", "assistant", content, total)
+        await loop.run_in_executor(None, quota_record, uid, "telegram", total)
+        return content, total
+
+    async def _deliver_response(self, chat_id: int, uid: str, content: str, total: int) -> None:
+        """Send LLM response to Telegram. Handle approval cards, gateway-confused hallucinations, plain text."""
+        intent_data = _extract_intent_from_response(content)
+        if intent_data and intent_data["action_type"] in REVIEW_ACTIONS:
+            from .approval import create_intent, format_intent_payload
+            clean = _strip_intent_block(content)
+            loop = asyncio.get_running_loop()
+            intent = await loop.run_in_executor(
+                None, create_intent, uid, intent_data["action_type"], intent_data["payload"]
+            )
+            display = format_intent_payload(intent)
+            await self.send(
+                chat_id,
+                f"{clean}\n\n{display}\n\n❓ Подтверди или отмень (ответь «подтверждаю» или «отмена»)",
+            )
+        elif GATEWAY_CONFUSED_PATTERNS.search(content):
+            await self.send(
+                chat_id,
+                "🤔 Hermes не смог обработать запрос (похоже на сбой сессии на стороне gateway).\n\n"
+                "Попробуй:\n"
+                "• Перефразировать запрос\n"
+                "• Отправить /start и заново привязать аккаунт\n"
+                "• Зайти в web-интерфейс https://hermes.kulinich.ru/chat/ и попробовать там",
+            )
+        else:
+            await self.send(chat_id, content)
+        asyncio.create_task(maybe_summarize(uid))
 
     async def handle_update(self, update: dict):
         message = update.get("message") or update.get("edited_message")
@@ -498,6 +516,21 @@ class TelegramRelay:
                 "они сохранятся и я смогу с ними работать.",
             )
             return
+
+        # Pre-check: любая неизвестная slash-команда НЕ должна уходить в LLM.
+        # Без этого LLM видит «/foo bar», путается и галлюцинирует
+        # «No main session found. Create one via /new or Web UI first.»
+        if text and text.startswith("/"):
+            cmd = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+            if cmd not in KNOWN_COMMANDS:
+                await self.send(
+                    chat_id,
+                    f"❓ Не знаю команду <code>{cmd}</code>.\n\n"
+                    "Доступные: /start, /login, /help, /whoami, /files, /unlink.\n"
+                    "Просто напиши вопрос обычным сообщением — я отвечу.",
+                    parse_mode="HTML",
+                )
+                return
 
         # Handle /whoami command
         if text == "/whoami":
@@ -691,7 +724,7 @@ class TelegramRelay:
             try:
                 r = await self._client.get(
                     f"{self.api_base}/getUpdates",
-                    params={"timeout": 1, "offset": self.offset, "allowed_updates": '["message"]'},
+                    params={"timeout": LONG_POLL_TIMEOUT, "offset": self.offset, "allowed_updates": '["message"]'},
                 )
                 r.raise_for_status()
                 data = r.json()
