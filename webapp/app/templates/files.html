@@ -27,14 +27,15 @@
     <span class="storage-info">Использовано: {{ listing.total_size_human }} из {{ listing.storage_limit_human }}</span>
   </div>
 
+  {% macro relpath(name) %}{{ (listing.current_path + '/' + name) if listing.current_path else name }}{% endmacro %}
   <div class="files-grid" id="files-grid">
     {% for d in listing.directories %}
       <div class="file-card folder">
         <div class="file-icon">📁</div>
-        <div class="file-name"><a href="{{ chat_prefix }}/files?path={{ (listing.current_path + '/' + d.name)|urlencode }}">{{ d.name }}</a></div>
+        <div class="file-name"><a href="{{ chat_prefix }}/files?path={{ relpath(d.name)|urlencode }}">{{ d.name }}</a></div>
         <div class="file-meta">папка</div>
         <div class="file-actions">
-          <button class="btn-sm-del btn-delete" data-path="{{ (listing.current_path + '/' + d.name)|urlencode }}" data-kind="folder">🗑️ Удалить</button>
+          <button class="btn-sm-del btn-delete" data-path="{{ relpath(d.name)|urlencode }}" data-kind="folder">🗑️ Удалить</button>
         </div>
       </div>
     {% endfor %}
@@ -43,19 +44,19 @@
         <div class="file-icon">{% if f.ext in ('.txt','.md','.csv','.json') %}📄{% elif f.ext in ('.pdf','.docx','.xlsx') %}📋{% elif f.ext in ('.oga','.ogg','.mp3','.wav','.m4a','.opus') %}🎵{% else %}📄{% endif %}</div>
         <div class="file-name">
           {% if f.ext in ('.txt','.md') %}
-            <a href="#" class="btn-preview" data-path="{{ (listing.current_path + '/' + f.name)|urlencode }}" data-name="{{ f.name }}">{{ f.name }}</a>
+            <a href="#" class="btn-preview" data-path="{{ relpath(f.name)|urlencode }}" data-name="{{ f.name }}">{{ f.name }}</a>
           {% else %}
             {{ f.name }}
           {% endif %}
         </div>
         <div class="file-meta">{{ f.size_human }}</div>
         <div class="file-actions">
-          <a class="btn-sm" href="{{ chat_prefix }}/api/files/download?path={{ (listing.current_path + '/' + f.name)|urlencode }}">⬇️ Скачать</a>
-          <button class="btn-sm btn-ask" data-path="{{ (listing.current_path + '/' + f.name)|urlencode }}">💬 Спросить</button>
+          <a class="btn-sm" href="{{ chat_prefix }}/api/files/download?path={{ relpath(f.name)|urlencode }}">⬇️ Скачать</a>
+          <button class="btn-sm btn-ask" data-path="{{ relpath(f.name)|urlencode }}">💬 Спросить</button>
           {% if f.ext in ('.txt','.md') %}
-            <button class="btn-sm btn-preview" data-path="{{ (listing.current_path + '/' + f.name)|urlencode }}" data-name="{{ f.name }}">👁️</button>
+            <button class="btn-sm btn-preview" data-path="{{ relpath(f.name)|urlencode }}" data-name="{{ f.name }}">👁️</button>
           {% endif %}
-          <button class="btn-sm-del btn-delete" data-path="{{ (listing.current_path + '/' + f.name)|urlencode }}" data-kind="file">🗑️</button>
+          <button class="btn-sm-del btn-delete" data-path="{{ relpath(f.name)|urlencode }}" data-kind="file">🗑️</button>
         </div>
       </div>
     {% endfor %}
