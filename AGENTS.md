@@ -151,18 +151,53 @@ docker exec hermes-gateway hermes doctor
 
 | Спека | Что добавляется | Статус |
 |---|---|---|
-| `10_files_ui.md` | Tab «Файлы»: `app/file_service.py`, `/api/files/*`, `templates/files.html`, path-traversal guard, storage quota, Ask-agent | Не начато |
-| `13_hermes_skills_usage.md` | `app/skills/library/*.md` (10 управленческих шаблонов), компактный список в `build_system_prompt`, full-inject on selection, вкладка Skills | Не начато |
-| `11_scheduler_proactivity_automations.md` | Таблицы `scheduled_jobs`+`job_runs`, `app/scheduler.py` (worker-loop 30–60s), `app/jobs/handlers/*` (reminder/morning_digest/custom_prompt), вкладка «Автоматизации», quota-guard, proactive TG | Не начато |
-| `12_browsing_parsing_and_mcp.md` | `app/tools/web_tools.py`: SearxNG + trafilatura + safe-fetch (SSRF block), `web_download_files` через approval, скачивание в Files | Не начато |
-| `09_training_mvp_scope.md` + `docs/training/lesson_scenario_agent_setup.md` | E2E прогон 90-мин сценария «настройка персонального агента» | После 10–13 |
+| `01_fast_mvp_hardening.md` | P0: секреты вне промпта, шифрование, hard quota, CSRF, rate-limit, file allowlist | ✅ Реализовано |
+| `02_action_approval_policy.md` | Однократное подтверждение действий, `action_intents` с TTL, natural language parse | ✅ Реализовано |
+| `03_manager_skills_pack.md` | 10 управленческих навыков, routing block, email через approval | ✅ Реализовано |
+| `04_test_plan.md` | 290+ тестов, CI pipeline (ruff, pytest, bandit) | ✅ Реализовано |
+| `08_token_cost_control.md` | `MAX_HISTORY`, `MAX_TOKENS_PER_RESPONSE`, quota reserve | ⚠️ Частично (нет `MAX_MEMORY_CHARS`, `MAX_HISTORY_MESSAGE_CHARS` и др.) |
+| `10_files_ui.md` | Tab «Файлы»: `app/file_service.py`, `/api/files/*`, `templates/files.html`, path-traversal guard, storage quota, Ask-agent | ✅ Реализовано |
+| `11_scheduler_proactivity_automations.md` | `scheduled_jobs`+`job_runs`, `app/scheduler.py`, handlers (reminder/digest/custom_prompt), вкладка «Автоматизации», `create_scheduled_job` action_intent | ✅ Реализовано |
+| `12_browsing_parsing_and_mcp.md` | `app/tools/web_tools.py`: SearxNG + trafilatura + SSRF guard, `web_download_files` через approval | ✅ Реализовано |
+| `13_hermes_skills_usage.md` | 10 навыков `.md`, compact list в system prompt, per-turn injection, вкладка Skills, `[Use skill:]`/`[Используй навык:]` | ✅ Реализовано |
+| `09_training_mvp_scope.md` | E2E прогон 90-мин сценария «настройка персонального агента» | ❌ Не начато |
 
 **Соглашения для новых модулей:**
 - Backend-модули в `webapp/app/`, тесты рядом в `webapp/tests/`, имя `test_<модуль>.py`.
 - Любое state-changing API — через CSRF (`/api/...` использует middleware из `app/main.py`).
 - Любой внешний fetch (web/scheduler) — quota-check ПЕРЕД вызовом LLM (через `app/quota.py`).
 - Любые скачивания извне — в `HERMES_USERS_DIR/<uid>/files/` с проверкой расширения/размера/SSRF.
-- Аппрувы — добавлять новые `action_type` в `REVIEW_ACTIONS` в `app/relay.py`.
+- Аппрувы — добавлять новые `action_type` в `REVIEW_ACTIONS` в `app/approval.py`.
+
+### action_intent (подтверждение действий)
+
+Агент НЕ выполняет внешние действия напрямую — он формирует `action_intent` в ответе,
+а webapp/relay запрашивает подтверждение у пользователя. Типы действий:
+
+| action_type | Описание | Где обрабатывается |
+|---|---|---|
+| `email_send` | Отправка письма | `email_tools.send_email` |
+| `web_download_files` | Скачивание файлов из веба | `web_tools.download_files` |
+| `create_scheduled_job` | Создание автоматизации/напоминания | `jobs.store.create_job` |
+| `calendar_create` | Создание события в календаре | (заглушка) |
+| `calendar_update` | Обновление события | (заглушка) |
+
+### Автоматизации vs gateway cron
+
+**Агент НЕ должен использовать свой внутренний `hermes cron`** — он не может отправлять
+уведомления в Telegram. Вместо этого агент использует `action_intent` с типом
+`create_scheduled_job`, который создаёт задачу в webapp-scheduler. Это отражено в:
+
+- **System prompt** — блок «Автоматизации и напоминания» в `chat.py:build_system_prompt()`
+- **SOUL.md шаблон** — инструкция «НЕ используй свой внутренний cron»
+- **UI** — вкладка «Автоматизации» показывает gateway cron tasks (только чтение/удаление)
+  через `GET /api/gateway-cron` и `DELETE /api/gateway-cron/{job_id}`
+
+### Навыки (skills)
+
+Маркер активации навыка в чате: `[Используй навык: name]` (русский) или `[Use skill: name]` (английский).
+Regex: `SKILL_MARKER_RE` в `chat.py`. При обнаружении маркера полный текст навыка инжектируется
+в текущий turn, а не в system prompt.
 
 ## Известные ограничения
 
