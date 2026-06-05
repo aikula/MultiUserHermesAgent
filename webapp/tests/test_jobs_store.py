@@ -45,35 +45,56 @@ class TestCreateJob:
         assert job["updated_at"]
 
     def test_create_requires_title(self, store, test_user):
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         with pytest.raises(ValueError, match="title"):
             store.create_job(
                 uid=test_user, title="", kind="reminder",
-                schedule_type="one_time", run_at=datetime.now(timezone.utc).isoformat(),
+                schedule_type="one_time", run_at=future,
                 channel="web", payload={},
             )
 
     def test_create_rejects_unknown_kind(self, store, test_user):
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         with pytest.raises(ValueError, match="kind"):
             store.create_job(
                 uid=test_user, title="x", kind="unknown_kind",
-                schedule_type="one_time", run_at=datetime.now(timezone.utc).isoformat(),
+                schedule_type="one_time", run_at=future,
                 channel="web", payload={},
             )
 
     def test_create_rejects_unknown_schedule_type(self, store, test_user):
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         with pytest.raises(ValueError, match="schedule_type"):
             store.create_job(
                 uid=test_user, title="x", kind="reminder",
-                schedule_type="every_blue_moon", run_at=datetime.now(timezone.utc).isoformat(),
+                schedule_type="every_blue_moon", run_at=future,
                 channel="web", payload={},
             )
 
     def test_create_rejects_unknown_channel(self, store, test_user):
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         with pytest.raises(ValueError, match="channel"):
             store.create_job(
                 uid=test_user, title="x", kind="reminder",
-                schedule_type="one_time", run_at=datetime.now(timezone.utc).isoformat(),
+                schedule_type="one_time", run_at=future,
                 channel="fax", payload={},
+            )
+
+    def test_create_one_time_rejects_missing_run_at(self, store, test_user):
+        with pytest.raises(ValueError, match="future"):
+            store.create_job(
+                uid=test_user, title="x", kind="reminder",
+                schedule_type="one_time", run_at=None,
+                channel="web", payload={},
+            )
+
+    def test_create_one_time_rejects_past_run_at(self, store, test_user):
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        with pytest.raises(ValueError, match="future"):
+            store.create_job(
+                uid=test_user, title="x", kind="reminder",
+                schedule_type="one_time", run_at=past,
+                channel="web", payload={},
             )
 
     def test_create_daily_computes_next_run_at(self, store, test_user):
@@ -108,7 +129,7 @@ class TestListAndGet:
              1000000, now_iso()),
         )
         db.commit()
-        run_at = datetime.now(timezone.utc).isoformat()
+        run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         a = store.create_job(uid=test_user, title="mine", kind="reminder",
                              schedule_type="one_time", run_at=run_at, channel="web",
                              payload={"message": "x"})
@@ -122,7 +143,7 @@ class TestListAndGet:
         assert len(theirs) == 1 and theirs[0]["id"] == b["id"]
 
     def test_list_excludes_deleted_by_default(self, store, test_user):
-        run_at = datetime.now(timezone.utc).isoformat()
+        run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         job = store.create_job(uid=test_user, title="t", kind="reminder",
                                schedule_type="one_time", run_at=run_at, channel="web",
                                payload={"message": "m"})
@@ -130,7 +151,7 @@ class TestListAndGet:
         assert store.list_jobs(test_user) == []
 
     def test_list_with_include_deleted(self, store, test_user):
-        run_at = datetime.now(timezone.utc).isoformat()
+        run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         job = store.create_job(uid=test_user, title="t", kind="reminder",
                                schedule_type="one_time", run_at=run_at, channel="web",
                                payload={"message": "m"})
@@ -149,7 +170,7 @@ class TestListAndGet:
              1000000, now_iso()),
         )
         db.commit()
-        run_at = datetime.now(timezone.utc).isoformat()
+        run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         job = store.create_job(uid=other, title="t", kind="reminder",
                                schedule_type="one_time", run_at=run_at, channel="web",
                                payload={"message": "m"})
@@ -161,7 +182,7 @@ class TestListAndGet:
 
 class TestLifecycle:
     def test_disable_and_enable(self, store, test_user):
-        run_at = datetime.now(timezone.utc).isoformat()
+        run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         job = store.create_job(uid=test_user, title="t", kind="reminder",
                                schedule_type="one_time", run_at=run_at, channel="web",
                                payload={"message": "m"})
@@ -182,7 +203,7 @@ class TestLifecycle:
              1000000, now_iso()),
         )
         db.commit()
-        run_at = datetime.now(timezone.utc).isoformat()
+        run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         job = store.create_job(uid=other, title="t", kind="reminder",
                                schedule_type="one_time", run_at=run_at, channel="web",
                                payload={"message": "m"})
@@ -190,7 +211,7 @@ class TestLifecycle:
         assert store.get_job(other, job["id"])["status"] == "enabled"  # unchanged
 
     def test_delete_is_soft(self, store, test_user):
-        run_at = datetime.now(timezone.utc).isoformat()
+        run_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         job = store.create_job(uid=test_user, title="t", kind="reminder",
                                schedule_type="one_time", run_at=run_at, channel="web",
                                payload={"message": "m"})

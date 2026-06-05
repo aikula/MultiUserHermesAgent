@@ -81,14 +81,15 @@ class TestRunDueJobs:
         run_due, _ = worker
         past = datetime.now(timezone.utc) - timedelta(hours=1)
         future = datetime.now(timezone.utc) + timedelta(hours=1)
+        future_iso = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
         enabled = store.create_job(uid=test_user, title="e", kind="reminder",
-                                   schedule_type="one_time", run_at=datetime.now(timezone.utc).isoformat(),
+                                   schedule_type="one_time", run_at=future_iso,
                                    channel="web", payload={"message": "x"})
         disabled = store.create_job(uid=test_user, title="d", kind="reminder",
-                                    schedule_type="one_time", run_at=datetime.now(timezone.utc).isoformat(),
+                                    schedule_type="one_time", run_at=future_iso,
                                     channel="web", payload={"message": "x"})
         notdue = store.create_job(uid=test_user, title="f", kind="reminder",
-                                  schedule_type="one_time", run_at=datetime.now(timezone.utc).isoformat(),
+                                  schedule_type="one_time", run_at=future_iso,
                                   channel="web", payload={"message": "x"})
         _backdate(db, enabled["id"], past)
         _backdate(db, disabled["id"], past)

@@ -30,22 +30,55 @@ def _add_notification(uid: str, title: str, body: str, link: str | None = None) 
     )
 
 
-def _try_telegram(uid: str, text: str) -> tuple[bool, str | None]:
-    """Best-effort Telegram delivery; returns (delivered, error).
-
-    Looks up the user's telegram_id; if not linked, returns (False, None).
-    Otherwise bridges sync→async via asyncio.run.
-    """
+def _get_telegram_id(uid: str) -> int | None:
+    """Lookup telegram_id for a user. Falls back to auth.json reverse lookup."""
     row = get_db().execute(
         "SELECT telegram_id FROM users WHERE uid=?", (uid,),
     ).fetchone()
-    chat_id = row["telegram_id"] if row and row["telegram_id"] else None
+    if row and row["telegram_id"]:
+        return row["telegram_id"]
+    import json
+    from ..db import HERMES_SHARED_DIR
+    auth_path = HERMES_SHARED_DIR / "auth.json"
+    if not auth_path.exists():
+        return None
+    try:
+        auth = json.loads(auth_path.read_text() or "{}")
+        for tg_id, linked_uid in auth.items():
+            if linked_uid == uid:
+                return int(tg_id)
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _send_telegram_sync(chat_id: int, text: str) -> None:
+    """Send a Telegram message synchronously via Bot API."""
+    import httpx
+    import os
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    with httpx.Client(timeout=15) as client:
+        r = client.post(url, json={"chat_id": chat_id, "text": text})
+        r.raise_for_status()
+        data = r.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"telegram sendMessage: {data.get('description')}")
+
+
+def _try_telegram(uid: str, text: str) -> tuple[bool, str | None]:
+    """Best-effort Telegram delivery; returns (delivered, error).
+
+    Looks up the user's telegram_id (with auth.json fallback).
+    Uses a direct sync HTTP call to Telegram Bot API — no async relay dependency.
+    """
+    chat_id = _get_telegram_id(uid)
     if not chat_id:
         return False, None
     try:
-        import asyncio
-        from .. import relay
-        asyncio.run(relay.send_message(chat_id, text))
+        _send_telegram_sync(chat_id, text)
         return True, None
     except Exception as e:  # pragma: no cover — best-effort
         return False, str(e)

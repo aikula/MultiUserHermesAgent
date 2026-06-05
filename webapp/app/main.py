@@ -754,6 +754,26 @@ async def api_jobs_list(user: str | None = Depends(current_user)):
     return JSONResponse({"ok": True, "jobs": jobs})
 
 
+def _user_has_telegram(uid: str) -> bool:
+    """Check if user has Telegram linked (users.telegram_id or auth.json)."""
+    db = get_db()
+    row = db.execute(
+        "SELECT telegram_id FROM users WHERE uid=?", (uid,),
+    ).fetchone()
+    if row and row["telegram_id"]:
+        return True
+    auth_path = HERMES_SHARED_DIR / "auth.json"
+    if auth_path.exists():
+        try:
+            auth = json.loads(auth_path.read_text() or "{}")
+            for linked_uid in auth.values():
+                if linked_uid == uid:
+                    return True
+        except (json.JSONDecodeError, OSError):
+            pass
+    return False
+
+
 @app.post("/api/jobs")
 async def api_jobs_create(request: Request, user: str | None = Depends(current_user)):
     if not user:
@@ -761,6 +781,16 @@ async def api_jobs_create(request: Request, user: str | None = Depends(current_u
     require_csrf(request)
     body = await request.json()
     from .jobs import store as job_store
+
+    # Default to telegram when user has Telegram linked
+    channel = body.get("channel") or ""
+    if not channel or channel == "web":
+        has_tg = await asyncio.to_thread(_user_has_telegram, user)
+        if has_tg:
+            channel = "telegram"
+        else:
+            channel = "web"
+
     try:
         job = await asyncio.to_thread(
             job_store.create_job,
@@ -771,7 +801,7 @@ async def api_jobs_create(request: Request, user: str | None = Depends(current_u
             run_at=body.get("run_at"),
             time_of_day=body.get("time_of_day"),
             weekdays=body.get("weekdays"),
-            channel=body.get("channel", "web"),
+            channel=channel,
             payload=body.get("payload") or {},
         )
     except ValueError as e:
@@ -1041,6 +1071,10 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
                             job_payload = {"message": payload["message"]}
                         if not job_payload and payload.get("prompt"):
                             job_payload = {"prompt": payload["prompt"]}
+                        channel = payload.get("channel", "")
+                        if not channel or channel == "web":
+                            has_tg = await asyncio.to_thread(_user_has_telegram, user)
+                            channel = "telegram" if has_tg else "web"
                         job = await asyncio.to_thread(
                             job_store.create_job,
                             uid=user,
@@ -1050,7 +1084,7 @@ async def api_chat(request: Request, user: str | None = Depends(current_user)):
                             run_at=payload.get("run_at"),
                             time_of_day=payload.get("time_of_day"),
                             weekdays=payload.get("weekdays"),
-                            channel=payload.get("channel", "web"),
+                            channel=channel,
                             payload=job_payload,
                         )
                         await loop.run_in_executor(None, execute_intent, pending["id"], json.dumps(job, ensure_ascii=False, default=str), None)
@@ -1219,6 +1253,33 @@ async def api_approve(request: Request, user: str | None = Depends(current_user)
                 summary += f", пропущено: {skipped_count}"
             await loop.run_in_executor(None, chat.save_message, user, "web", "assistant", summary, 0)
             return JSONResponse({"ok": True, "result": result})
+        elif intent["action_type"] == "create_scheduled_job":
+            from .jobs import store as job_store
+            job_payload = payload.get("payload") or {}
+            if not job_payload and payload.get("message"):
+                job_payload = {"message": payload["message"]}
+            if not job_payload and payload.get("prompt"):
+                job_payload = {"prompt": payload["prompt"]}
+            channel = payload.get("channel", "")
+            if not channel or channel == "web":
+                has_tg = await asyncio.to_thread(_user_has_telegram, user)
+                channel = "telegram" if has_tg else "web"
+            job = await asyncio.to_thread(
+                job_store.create_job,
+                uid=user,
+                title=payload.get("title", ""),
+                kind=payload.get("kind", "reminder"),
+                schedule_type=payload.get("schedule_type", "one_time"),
+                run_at=payload.get("run_at"),
+                time_of_day=payload.get("time_of_day"),
+                weekdays=payload.get("weekdays"),
+                channel=channel,
+                payload=job_payload,
+            )
+            await loop.run_in_executor(None, execute_intent, intent_id, json.dumps(job, ensure_ascii=False, default=str), None)
+            summary = f"✅ Автоматизация «{job.get('title', payload.get('kind', '?'))}» создана"
+            await loop.run_in_executor(None, chat.save_message, user, "web", "assistant", summary, 0)
+            return JSONResponse({"ok": True, "intent_id": intent_id, "job": job})
         else:
             await loop.run_in_executor(None, execute_intent, intent_id, None, f"Unknown action type: {intent['action_type']}")
             raise HTTPException(400, f"Unknown action type: {intent['action_type']}")

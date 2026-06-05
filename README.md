@@ -47,13 +47,18 @@ curl -fsS http://localhost:9000/health
 
 ## Webapp Features
 
-- **Auth** — register with invite code, login, session cookies
-- **Chat** — per-user memory scoping via `X-Hermes-Session-Key`, server UTC time injected into system prompt
-- **Profile** — name, password, SOUL.md, email settings
+- **Auth** — register with invite code, login, session cookies (rate-limited)
+- **Chat** — per-user memory scoping via `X-Hermes-Session-Key`, server UTC time injected into system prompt, skill activation via `[Используй навык: name]` marker
+- **Profile** — name, password, SOUL.md, email settings, Telegram link
+- **Files UI** (`/files`) — upload, download, create folders, write text, Ask-agent prefix
+- **Skills** (`/skills`) — 10 manager skill templates (meeting followup, task extraction, decision memo, risk review, etc.)
+- **Automations** (`/automations`) — scheduler with reminders (one-time/daily/weekly), morning digest, custom prompts, `Run now`, delivery via web or Telegram
+- **Web tools** (`/api/web/*`) — search (SearxNG), fetch + trafilatura parse, extract links, bulk download with approval
 - **Email integration** — IMAP/SMTP with encrypted credentials
-- **Telegram relay** — `@aik_hermesbot` with file handling, voice message STT, slash-command whitelist, typing indicator
-- **Approval flow** — single confirmation for external actions
-- **Manager templates** — 6 demo scenarios (email, meeting, tasks, etc.)
+- **Telegram relay** — file handling, voice message STT, slash-command whitelist, typing indicator
+- **Approval flow** — single confirmation for external actions (email, scheduled jobs, web downloads, calendar)
+- **Manager templates** — action intent instructions in system prompt
+- **Gateway cron** — read-only display + delete in UI (with explanation that Telegram delivery requires webapp automations)
 
 ## Telegram Relay
 
@@ -75,22 +80,26 @@ intercepts it and shows a human-friendly recovery hint instead.
 
 ## Security
 
-### P0 Hardening (status: active)
+### P0 Hardening status
 
-- **Secrets not in LLM prompt** — email passwords never exposed to model
-- **Encryption at rest** — Fernet encryption for email credentials via `USER_SECRET_ENCRYPTION_KEY`
-- **Hard quota** — blocks requests with reserve tokens; `record()` clamps to 0
-- **Rate limiting** — 10 login attempts per 5 minutes, requires 429
-- **CSRF protection** — token validation for browser POST
-- **Secure cookies** — `httponly`, `samesite`/`secure` configurable via env
-- **File upload safety** — UUID filenames, dangerous/unknown extension rejection
-- **Constant-time comparison** — internal secret check via `hmac.compare_digest`
+| Пункт | Статус |
+|---|---|
+| Secrets not in LLM prompt | ✅ Implemented |
+| Encryption at rest (Fernet) | ✅ Implemented |
+| Hard quota with reserve tokens | ✅ Implemented |
+| Rate limiting (login) | ✅ Implemented |
+| CSRF protection | ✅ Implemented |
+| Secure cookies (httponly, samesite, secure via env) | ✅ Implemented |
+| File upload safety (UUID names, extension rejection) | ✅ Implemented |
+| Constant-time comparison (hmac.compare_digest) | ✅ Implemented |
+| Deterministic action pre-router (P1-4) | ❌ Not implemented — LLM-dependent |
+| README status honesty (P1-7) | ✅ This table |
 
 ### Security Model
 
 - Each user has isolated memory, files, and credentials
-- External actions (email send) require single confirmation
-- Internal endpoints use `X-Internal-Secret` header
+- External actions (email, calendar, scheduled jobs, web downloads) require single confirmation via `action_intent`
+- Internal endpoints use `X-Internal-Secret` header with constant-time comparison
 - All secrets in `.env.hermes` (chmod 600, not in git)
 
 ## Configuration
@@ -107,7 +116,7 @@ intercepts it and shows a human-friendly recovery hint instead.
 ```bash
 cd webapp
 pip install -r requirements.txt -r requirements-dev.txt
-pytest -q           # 102 tests
+pytest -q           # 298 tests
 ruff check app tests
 bandit -r app -ll   # security
 ```

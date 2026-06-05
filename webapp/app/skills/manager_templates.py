@@ -13,9 +13,11 @@ MANAGER_TEMPLATES_BLOCK = """
 ```action_intent
 {"action_type": "email_send", "payload": {"to": "...", "subject": "...", "body": "..."}}
 ```
-Типы: email_send, calendar_create, calendar_update.
-Покажи черновик, спроси "Отправить? Подтверди или отмени."
+Типы: email_send, calendar_create, calendar_update, create_scheduled_job.
+- Письма: покажи черновик, спроси "Отправить? Подтверди или отмени."
+- Напоминания: формируй create_scheduled_job action_intent (см. блок Автоматизации).
 НИКОГДА не выполняй действие без approval пользователя.
+НЕ используй свой внутренний cron — создавай автоматизации через action_intent.
 """
 
 

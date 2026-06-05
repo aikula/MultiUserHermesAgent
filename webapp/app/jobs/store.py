@@ -132,6 +132,12 @@ def create_job(
         schedule_type, seed_iso, time_of_day, weekdays, after=now,
     )
 
+    # Reject one-time jobs with past run_at (allow sub-second timing tolerance)
+    if schedule_type == "one_time" and next_run is None and not run_at:
+        raise ValueError("one_time jobs require run_at in the future")
+    if schedule_type == "one_time" and next_run is None and run_at:
+        raise ValueError("run_at must be in the future for one_time jobs")
+
     job_id = "job_" + secrets.token_urlsafe(8)
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
     rrule = None

@@ -163,6 +163,43 @@ class TestCustomPromptHandler:
         assert result["status"] == "skipped_quota"
 
 
+class TestTelegramLookup:
+    def test_get_telegram_id_from_users_table(self, test_user, db):
+        db.execute("UPDATE users SET telegram_id=123456789 WHERE uid=?", (test_user,))
+        db.commit()
+        from app.jobs.handlers import _get_telegram_id
+        assert _get_telegram_id(test_user) == 123456789
+
+    def test_get_telegram_id_fallback_to_auth_json(self, test_user, monkeypatch, setup_test_env):
+        import json
+        import app.db as db_mod
+        from pathlib import Path
+        shared_dir = setup_test_env["shared_dir"]
+        monkeypatch.setattr(db_mod, "HERMES_SHARED_DIR", Path(shared_dir))
+        auth_path = shared_dir / "auth.json"
+        auth_path.write_text(json.dumps({"987654321": test_user, "555666777": "other_user"}))
+        from app.jobs.handlers import _get_telegram_id
+        assert _get_telegram_id(test_user) == 987654321
+
+    def test_get_telegram_id_returns_none_when_not_found(self, test_user):
+        from app.jobs.handlers import _get_telegram_id
+        assert _get_telegram_id(test_user) is None
+
+    def test_get_telegram_id_users_table_takes_precedence(self, test_user, db, monkeypatch, setup_test_env):
+        import json
+        import app.db as db_mod
+        from pathlib import Path
+        shared_dir = setup_test_env["shared_dir"]
+        monkeypatch.setattr(db_mod, "HERMES_SHARED_DIR", Path(shared_dir))
+        db.execute("UPDATE users SET telegram_id=111111 WHERE uid=?", (test_user,))
+        db.commit()
+        auth_path = shared_dir / "auth.json"
+        auth_path.write_text(json.dumps({"222222": test_user}))
+        from app.jobs.handlers import _get_telegram_id
+        # users.telegram_id should win
+        assert _get_telegram_id(test_user) == 111111
+
+
 class TestDispatch:
     """The dispatch function picks the right handler based on job.kind."""
 
